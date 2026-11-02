@@ -4,7 +4,7 @@ description: Make a website findable by Google, Bing and AI answer engines (Chat
 license: MIT
 compatibility: Python 3.9+ (standard library). Needs network access to the site and to official docs. Optional - google-auth + requests (Search Console API), Pillow (OG images), env vars BING_WEBMASTER_API_KEY, GOOGLE_APPLICATION_CREDENTIALS or GSC_ACCESS_TOKEN.
 metadata:
-  version: "1.0.1"
+  version: "1.1.0"
   repository: "https://github.com/MohsinMMK/get-found"
   rules-verified: "2026-11-02"
 ---
@@ -13,7 +13,7 @@ metadata:
 
 Make a site **findable** (search engines and AI answer engines can discover, read and trust it) and **keep** it that way: every run reads the project's ledger, re-verifies rules against official docs, fixes what's broken or stale, and records what it did.
 
-Scripts live in `${CLAUDE_SKILL_DIR}/scripts/` (if that variable isn't substituted in your environment, use the `scripts/` folder next to this SKILL.md). Run them from the **project root**; they keep state in `./.get-found/`.
+Scripts live in `${CLAUDE_SKILL_DIR}/scripts/` (if that variable isn't substituted in your environment, use the `scripts/` folder next to this SKILL.md). They keep state in one `.get-found/` at the repo root and find it from any subfolder (in a monorepo, run them from the root or from `apps/<app>/` — never create a second `.get-found/` inside an app). Scripts that only read (`audit.py` without `--state`, `rules.py` before `init`) write nothing into the repo.
 
 ## The checklist (16 items, 6 pillars)
 
@@ -32,21 +32,27 @@ What "done" means for each item, how to verify it and how to fix it: **reference
 
 | Mode | When | Outcome |
 |---|---|---|
-| `setup` | No `.get-found/` yet, or user says "set up / get my site found" | Everything configured once, ledger created |
-| `check` | "audit", "how are we doing", scheduled run | Read-only report + ledger update, prioritised to-do |
+| `setup` | User says "set up / get my site found" (or agrees to it after a first check) | Everything configured once, ledger created |
+| `check` | "audit", "how are we doing", scheduled run | Read-only report + ledger update, prioritised to-do (no ledger yet: first check, below) |
 | `sync` | Pages added/changed/removed, redesign, deploy, "I updated the site" | Changed pages fixed, engines notified, ledger updated |
 | `post` | "write this week's post", blog item due | One published-ready post + sync |
 | `report` | Monthly, "how's SEO going", measurement due | Report in `.get-found/reports/`, keyword map refreshed |
 
-If the user passed an argument (`/get-found sync`), that's the mode. Otherwise infer it; if `.get-found/` is missing, start with `setup`. When unsure between `check` and `sync`, run `state.py due` and do what it says.
+If the user passed an argument (`/get-found sync`), that's the mode. Otherwise infer it. If `.get-found/` is missing and the user asked for a check or audit, do the **first check** below — don't start `setup` (it interviews the owner, edits code and creates files to commit) unless they ask for it. When unsure between `check` and `sync`, run `state.py due` and do what it says.
+
+### First check (no `.get-found/` yet — read-only, writes nothing in the repo)
+
+1. `rules.py refresh` (before `init` it caches in `~/.cache/get-found/`, not the repo), then `audit.py https://<live site> --probe-bots` — **no `--state`**: the report goes to the system temp dir and its path is printed. Read the `.md` report.
+2. Optionally `robots.py https://<live site>` and `state.py detect` (which app in a monorepo is the public site).
+3. Report findings with one next action each, then offer `setup` (it creates the ledger, which the owner should commit in their normal review flow — on repos with protected branches or docs-only deploy rules, it goes in the setup PR, never straight to the main branch).
 
 ## Step 0 — every run, every mode
 
 (In `setup`, do setup steps 1–2 first so `.get-found/` exists, then Step 0, then continue from setup step 3.)
 
-1. **Find the project and the site.** Project root = repo root (or ask for the live URL if there's no repo, e.g. Webflow/Shopify/WordPress-hosted). Detect framework and public dir (references/frameworks.md §Detect).
+1. **Find the project and the site.** Project root = repo root (or ask for the live URL if there's no repo, e.g. Webflow/Shopify/WordPress-hosted). Detect framework and public dir: `state.py detect` lists every web app in a monorepo (pnpm/npm/yarn workspaces, `apps/*`, turbo/nx); if there is more than one, ask which is the public website and pass `--app-dir` to `init` (references/frameworks.md §Detect). Internal apps (admin, ops, dashboard) are not audited.
 2. **Refresh the rules** — this is what keeps the skill current without anyone editing it:
-   `python3 ${CLAUDE_SKILL_DIR}/scripts/rules.py refresh` → for every CHANGED or FAILED source, follow references/live-docs.md (read the diff, decide if it matters, record real changes in `.get-found/rules-notes.md` or an override JSON). Then read `.get-found/rules-notes.md`; **notes there override this skill's reference files**.
+   `python3 ${CLAUDE_SKILL_DIR}/scripts/rules.py refresh` → for every CHANGED or FAILED source, follow references/live-docs.md (read the diff, decide if it matters, record real changes in `.get-found/rules-notes.md` or an override JSON), then `rules.py ack <id>` — a change keeps being reported until it is acknowledged, and a failed source is retried every run. Browser-only sources (they block scripts) are listed, not fetched: open them with your web-fetch/browser tool when their items matter. Then read `.get-found/rules-notes.md`; **notes there override this skill's reference files**. `rules.py ai-bots` prints counts only; use `--all` when the site blocks `*` or runs a bot-blocking CDN.
 3. **Load the ledger**: `python3 ${CLAUDE_SKILL_DIR}/scripts/state.py status` — shows each item's status, last checked, next due, and what's due now.
 4. Create a task list from what's due + the mode's steps, so a returning user can see progress.
 
@@ -55,15 +61,15 @@ Your own training knowledge about SEO is a starting point, not the authority —
 ## setup
 
 1. **Interview briefly** (one message, only what you can't detect): live URL and preferred canonical host; site type(s) (`saas app ai-tool local ecommerce content portfolio docs agency nonprofit`); main country/market and vertical (e.g. `IN`, `healthcare`); brand name; who publishes posts (author name); AI-training preference (`allow` default, or opt out of training while staying in AI search — explain the difference, references/ai-visibility.md); which social profiles exist.
-2. **Init state**: `state.py init --site <url> --type saas local --brand "<brand>" --country IN [--vertical healthcare] [--framework nextjs] [--blog-prefix /blog/] [--training allow|block] [--author "Name"] [--social linkedin=<url> instagram=<url>]`. Commit `.get-found/` with the project (it contains no secrets; per-run audit files are gitignored).
+2. **Init state**: `state.py init --site <url> --type saas local --brand "<brand>" --country IN [--vertical healthcare] [--app-dir apps/web] [--framework nextjs] [--blog-prefix /blog/ /guides/] [--training allow|block] [--author "Name"] [--social linkedin=<url> instagram=<url>]`. It creates `.get-found/` at the repo root and stores the app and public dir (monorepos: `init` stops and lists the apps until you pass `--app-dir`). `--blog-prefix` takes every editorial path the site uses. `init --force` changes only the options you pass again. Commit `.get-found/` with the project through the owner's normal review flow (it contains no secrets; per-run audit files are gitignored).
    Setup touches every item: read references/checklist.md once in full now; open other references only for the step you're on.
-3. **Baseline audit**: `audit.py --state .get-found --probe-bots` then `state.py ingest <report.json>`. Read the `.md` report.
+3. **Baseline audit**: `audit.py --state .get-found --probe-bots` then `state.py ingest <report.json>`. Read the `.md` report. Audit the **live** site into the ledger; audit a local dev server or preview without `--state` (ingest refuses a report for another host unless `--force`). If product/shop pages are noindex on purpose (pre-launch), record it in `config.json` as `"intentional_noindex": [{"path": "/products/", "reason": "pre-launch"}]` so the warning becomes info.
 4. **Fix on-site items in the codebase**, highest impact first: crawlability & robots.txt (templates in `assets/templates/`) → AI-readable rendering → sitemap (framework-native, real lastmod) → titles/descriptions/favicon → OG images (per-page; `og_image.py` as fallback) → JSON-LD (`assets/templates/jsonld/`) → optional llms.txt. Use the framework's mechanism (references/frameworks.md). Keep changes reviewable (a branch/PR if it's a git repo) and don't deploy without the owner.
 5. **Keyword map**: draft one primary keyword per indexable page with evidence (references/content-engine.md) into `.get-found/keywords.json`, plus a backlog of ≥ 8 post ideas with planned dates at the chosen cadence. Run `state.py keywords --check`.
 6. **Off-site connections — guide the user, step by step, with exact values** (you can't click dashboards, edit DNS or create accounts):
-   - Google Search Console Domain property + DNS TXT, sitemap submit, *Search generative AI* = Include, optional service account for automation → references/google.md.
+   - Google Search Console Domain property + DNS TXT (the audit sees the `google-site-verification` TXT record and moves `search-console` to `manual` until you confirm it's verified), sitemap submit, *Search generative AI* = Include, optional service account for automation → references/google.md.
    - Bing Webmaster Tools via "Import from Search Console", API key as env var → references/bing-indexnow.md.
-   - IndexNow: `submit.py indexnow-key --public-dir <public dir>`, deploy, then `submit.py indexnow --from-state`.
+   - IndexNow: `submit.py indexnow-key` (writes the key into the public dir stored by `init`; `--public-dir` to override), deploy, then `submit.py indexnow --from-state` (check first with `--dry-run`). URLs are grouped per host (apex and www are sent separately, each with its own key location); it fails loudly when the key file isn't live.
    - CDN/WAF bot settings (Cloudflare especially) → references/ai-visibility.md §CDN.
    - Social profiles + sameAs + preview debuggers → references/previews-social.md.
    - Directories: write the listing kit, give the user the first 3–5 submit links → references/directories.md.
@@ -81,10 +87,10 @@ Your own training knowledge about SEO is a starting point, not the authority —
 ## sync (after site changes)
 
 1. Step 0.
-2. Audit: full crawl (`audit.py --state .get-found`), or only changed paths if you know them (`--urls /new-page /blog/post`). `state.py ingest <report>` prints **new / changed / removed** URLs.
+2. Audit: full crawl (`audit.py --state .get-found`), or only changed paths if you know them (`--urls /new-page /blog/post`). `state.py ingest <report>` prints **new / changed / removed** URLs. A `--urls` or truncated report is partial: it can make site-wide items worse, never better — run a full crawl to close them.
 3. For each new or changed page, fix in the codebase: unique title + description that fit its keyword (add the page to `keywords.json`), OG image + tags, JSON-LD for its type, server-rendered content, internal links to and from it, canonical. For removed pages: 301 to the closest equivalent if one exists, else let it 404/410, and make sure it's gone from the sitemap and internal links.
 4. After the owner deploys: re-audit those URLs to confirm.
-5. Notify engines: `submit.py indexnow --from-state` (Bing, Yandex, Naver, Seznam, Yep — includes removed URLs); Google has no ping — the sitemap is the signal: `submit.py google submit-sitemap <sitemap url> --from-state` if API access exists, otherwise ask the user to press "Request indexing" in Search Console for at most a few key new URLs. Optional Bing quota-based submission: `submit.py bing submit-urls --from-state`.
+5. Notify engines: `submit.py indexnow --from-state` (Bing, Yandex, Naver, Seznam, Yep — includes removed URLs); Google has no ping — the sitemap is the signal: `submit.py google submit-sitemap <sitemap url> --from-state` if API access exists, otherwise ask the user to press "Request indexing" in Search Console for at most a few key new URLs; either way, then record it with `state.py submitted --channel google --all-pending` (otherwise `due` keeps asking once Google is tracked). Optional Bing quota-based submission: `submit.py bing submit-urls --from-state`.
 6. If titles/OG images changed on pages likely to be shared, remind the user to re-scrape in the platform debuggers (and change image URLs).
 7. Regenerate llms.txt if the site keeps one. Update ledger evidence; summary.
 
@@ -113,11 +119,11 @@ Follow references/measurement.md: pull Search Console + Bing data (scripts or us
 
 | Script | Purpose |
 |---|---|
-| `state.py` | `init`, `status`, `due`, `ingest`, `changes`, `submitted`, `mark`, `keywords --check`, `listings`, `listing`, `log` |
-| `audit.py` | Crawl + check every auditable item; `--urls` for specific pages, `--probe-bots` for CDN hints, `--max-pages N`. Writes JSON + Markdown to `.get-found/reports/` |
+| `state.py` | `init`, `detect` (apps in a monorepo), `status`, `due`, `ingest`, `changes`, `submitted`, `mark`, `keywords --check`, `listings`, `listing`, `log` |
+| `audit.py` | Crawl + check every auditable item, obeying robots.txt for Googlebot (`--ignore-robots` to audit disallowed URLs too); `--urls` for specific pages, `--probe-bots` for CDN hints, `--max-pages N`. Writes JSON + Markdown to `.get-found/reports/` with `--state`, else to the system temp dir |
 | `robots.py` | RFC 9309 robots.txt test: bot-by-bot access matrix for any site or local file |
 | `submit.py` | IndexNow (key + submit), Google Search Console API (sitemaps, inspect, performance), Bing Webmaster API (quota, URLs, sitemaps, queries) |
-| `rules.py` | `refresh` official sources and diff them, `ai-bots` (new crawlers), `news` (official changelogs/blogs) |
+| `rules.py` | `refresh` official sources and diff them, `ack` reviewed changes, `status`, `ai-bots [--all]` (new crawlers), `news` (official changelogs/blogs) |
 | `og_image.py` | 1200×630 preview images when the framework has no generator (needs Pillow) |
 
 Each script has `--help`. Exit code 1 from `audit.py` means errors were found, not that it crashed.

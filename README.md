@@ -67,10 +67,16 @@ Plain language works too: *"I just added a pricing page and two blog posts"*, *"
 ├── listings.json      directory listings and their status
 ├── history.jsonl      append-only log of every check, fix and submission
 ├── rules-notes.md     live-doc changes that override the skill's baseline
-├── rules.json         when each official source was last fetched / changed
-└── reports/           audit and monthly reports
+├── rules.json         when each official source was last fetched / changed, unreviewed changes
+├── .gitignore         keeps rules-cache/ and reports/audit-* out of git
+├── rules-cache/       local snapshots of the official pages (not committed)
+└── reports/           monthly reports (committed) and audit reports (not committed)
 ```
 Commit it. It contains no secrets.
+
+- **Monorepos:** `.get-found/` lives at the repo root. `state.py init --app-dir apps/web` records which app is the site and where its public folder is, so the scripts work from the root or from inside the app.
+- **First check before setup:** `/get-found check` on a project without `.get-found/` only reads: the audit report goes to a temp folder and nothing is written to the repo until you run setup.
+- **Docs changes:** when `rules.py refresh` finds a change in an official page, it keeps reporting it until the agent has reviewed it and run `rules.py ack <id>`. Sources that fail to fetch are retried next run, not marked fresh.
 
 ## Optional credentials (environment variables only)
 
@@ -108,7 +114,7 @@ Setup, maintenance and content all read and write the same ledger and keyword ma
 python3 -m unittest discover -s tests -v     # runs against a local fixture site
 claude plugin validate .
 ```
-Releases: bump `version` in `.claude-plugin/plugin.json` and `skills/get-found/SKILL.md`, add `.github/release-notes/vX.Y.Z.md`, update CHANGELOG.md, and push to `main` — the release workflow runs the tests, creates the `vX.Y.Z` tag and publishes `get-found.zip`.
+Releases: bump `version` in `.claude-plugin/plugin.json`, `skills/get-found/SKILL.md` and `VERSION` in `skills/get-found/scripts/_common.py`, add `.github/release-notes/vX.Y.Z.md`, update CHANGELOG.md, and push to `main` — the release workflow runs the tests, creates the `vX.Y.Z` tag and publishes `get-found.zip`.
 Facts were verified against official documentation on 2026-11-02. If a vendor changes something and the live refresh catches it in your project, please open an issue or PR with the override and the source link.
 
 ## License

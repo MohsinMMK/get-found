@@ -32,6 +32,8 @@ Always prefer the framework's own mechanism: generated sitemaps stay correct as 
 
 Find the **public/static dir** (served at site root) for files like `robots.txt`, `llms.txt`, the IndexNow key file: `public/` (Next, Vite, Astro, Nuxt), `static/` (SvelteKit, Hugo, Docusaurus), site root (Jekyll, Eleventy passthrough).
 
+**Monorepos.** Look for the signals above inside each workspace, not only at the repo root: workspaces in `package.json` / `pnpm-workspace.yaml`, or `turbo.json` / `nx.json` / `lerna.json` with `apps/*` and `packages/*`. `state.py detect` lists every web app it finds with its framework and public dir, and flags names like admin/ops/dashboard as internal. When there is more than one, ask the owner which app is the public website, then run `state.py init --app-dir apps/<app>` from the repo root. Keep one `.get-found/` at the repo root (the scripts find it from any subfolder). The public dir is then `apps/<app>/public` (or `static/`), and that is where `robots.txt`, `llms.txt` and the IndexNow key go. Fix the public app only; an internal app on another host should be `noindex` and out of the public sitemap.
+
 ## Next.js
 
 **App Router** (doc: nextjs.org/docs/app/api-reference/file-conventions/metadata)
