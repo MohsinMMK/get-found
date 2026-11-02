@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import datetime as _dt
-import gzip
 import hashlib
 import json
 import os
@@ -13,11 +12,12 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import zlib
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from pathlib import Path
 
-VERSION = "1.0.1"
+VERSION = "1.1.0"
 SKILL_DIR = Path(__file__).resolve().parent.parent
 REFERENCES = SKILL_DIR / "references"
 USER_AGENT = f"Mozilla/5.0 (compatible; get-found-audit/{VERSION}; +https://github.com/MohsinMMK/get-found)"
@@ -103,6 +103,62 @@ def _merge(base, over):
     return over
 
 
+STATE_DIRNAME = ".get-found"
+
+
+def repo_root(start: Path | None = None) -> Path | None:
+    """Nearest ancestor (or start itself) holding .git, else None."""
+    here = (start or Path.cwd()).resolve()
+    for d in (here, *here.parents):
+        if (d / ".git").exists():
+            return d
+    return None
+
+
+def find_state_dir(explicit: str | None = None, for_init: bool = False) -> Path:
+    """Resolve the project state dir.
+
+    An explicit --state path wins, except the bare default name ".get-found": then (as with no
+    --state) look for an existing .get-found/config.json in the cwd and its parents up to the git
+    root, so running from apps/<app>/ in a monorepo finds the one ledger at the repo root instead
+    of creating a stray copy. `init` creates it at the git root (or the cwd outside git).
+    """
+    if explicit and Path(explicit).as_posix().rstrip("/") not in (STATE_DIRNAME, "./" + STATE_DIRNAME):
+        return Path(explicit)
+    # no --state, or the bare default name: search instead of trusting the cwd
+    here = Path.cwd().resolve()
+    top = repo_root(here)
+    for d in (here, *here.parents) if top is not None else (here,):
+        if (d / STATE_DIRNAME / "config.json").exists():
+            return d / STATE_DIRNAME
+        if d == top:
+            break
+    if for_init and top is not None:
+        return top / STATE_DIRNAME
+    return Path(STATE_DIRNAME)
+
+
+def user_cache_dir() -> Path:
+    base = os.environ.get("XDG_CACHE_HOME") or os.path.join(os.path.expanduser("~"), ".cache")
+    return Path(base) / "get-found"
+
+
+def dns_txt(name: str) -> list[str] | None:
+    """TXT records via DNS-over-HTTPS (stdlib only). None when no resolver answered."""
+    for url in (f"https://dns.google/resolve?name={urllib.parse.quote(name)}&type=TXT",
+                f"https://cloudflare-dns.com/dns-query?name={urllib.parse.quote(name)}&type=TXT"):
+        r = fetch(url, headers={"Accept": "application/dns-json"}, timeout=8, retries=0)
+        if not r.ok:
+            continue
+        try:
+            data = json.loads(r.body)
+        except (ValueError, TypeError):
+            continue
+        return ["".join(re.findall(r'"((?:[^"\\]|\\.)*)"', a.get("data", ""))) or a.get("data", "").strip('"')
+                for a in data.get("Answer") or [] if a.get("type") == 16]
+    return None
+
+
 def sha(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()[:16]
 
@@ -119,6 +175,8 @@ class Response:
     error: str = ""
     redirects: list = field(default_factory=list)
     elapsed_ms: int = 0
+    truncated: bool = False   # body was cut at max_bytes (compressed or decompressed)
+    attempts: int = 1
 
     @property
     def ok(self) -> bool:
@@ -128,6 +186,8 @@ class Response:
         ctype = self.headers.get("content-type", "")
         m = re.search(r"charset=([\w-]+)", ctype, re.I)
         enc = m.group(1) if m else "utf-8"
+        if enc.lower().replace("_", "-") in ("utf-8", "utf8"):
+            enc = "utf-8-sig"  # drop a byte-order mark; it would otherwise corrupt the first line
         try:
             return self.body.decode(enc, "replace")
         except LookupError:
@@ -153,7 +213,20 @@ def _ssl_context():
 
 def fetch(url: str, method: str = "GET", headers: dict | None = None, data: bytes | None = None,
           timeout: float = 20.0, max_bytes: int = 6_000_000, user_agent: str | None = None,
-          follow_redirects: bool = True, range_bytes: int | None = None) -> Response:
+          follow_redirects: bool = True, range_bytes: int | None = None, retries: int = 1) -> Response:
+    """HTTP request that never raises. Network/DNS/TLS/timeout errors are retried `retries` times
+    (a single blip should not become a crawl error); HTTP error statuses are returned as-is."""
+    resp = _fetch_once(url, method, headers, data, timeout, max_bytes, user_agent, follow_redirects, range_bytes)
+    attempt = 1
+    while resp.error and attempt <= retries:
+        time.sleep(min(4.0, 1.5 * attempt))
+        attempt += 1
+        resp = _fetch_once(url, method, headers, data, timeout, max_bytes, user_agent, follow_redirects, range_bytes)
+    resp.attempts = attempt
+    return resp
+
+
+def _fetch_once(url, method, headers, data, timeout, max_bytes, user_agent, follow_redirects, range_bytes) -> Response:
     hdrs = {"User-Agent": user_agent or USER_AGENT, "Accept": "*/*", "Accept-Encoding": "gzip"}
     if range_bytes:
         hdrs["Range"] = f"bytes=0-{range_bytes - 1}"
@@ -188,10 +261,17 @@ def fetch(url: str, method: str = "GET", headers: dict | None = None, data: byte
         resp.elapsed_ms = int((time.monotonic() - t0) * 1000)
         return resp
     resp.elapsed_ms = int((time.monotonic() - t0) * 1000)
+    resp.truncated = len(body) > max_bytes
     if resp.headers.get("content-encoding", "").lower() == "gzip" or body[:2] == b"\x1f\x8b":
         try:
-            body = gzip.decompress(body)
-        except Exception:
+            # streaming + capped: a body cut at max_bytes still yields its decodable prefix,
+            # and a small compressed body cannot expand without limit
+            d = zlib.decompressobj(16 + zlib.MAX_WBITS)
+            out = d.decompress(body[:max_bytes], max_bytes + 1)
+            if len(out) > max_bytes or d.unconsumed_tail or not d.eof:
+                resp.truncated = True
+            body = out
+        except zlib.error:
             pass
     resp.body = body[:max_bytes]
     resp.redirects = rec.chain
@@ -226,7 +306,9 @@ def path_of(url: str) -> str:
 
 # --------------------------------------------------------------------------- html
 
-_SKIP_TEXT = {"script", "style", "noscript", "template", "svg", "head", "iframe", "canvas"}
+_SKIP_TEXT = {"script", "style", "noscript", "template", "svg", "math", "iframe", "canvas"}
+# elements allowed in <head>; any other start tag means the (optional) </head> was omitted
+_HEAD_TAGS = {"head", "title", "meta", "link", "style", "script", "base", "noscript", "template"}
 _VOID = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"}
 
 
@@ -249,6 +331,9 @@ class PageParser(HTMLParser):
         self._heading_buf = []
         self.text_parts = []
         self._skip_depth = 0
+        self._in_head = False
+        self._foreign_depth = 0  # inside <svg>/<math>: their <title> is not the document title
+        self.title_in_body = False
         self.images = 0
         self.images_no_alt = 0
         self.scripts = 0
@@ -258,11 +343,18 @@ class PageParser(HTMLParser):
 
     def handle_starttag(self, tag, attrs):
         a = {k.lower(): (v or "") for k, v in attrs}
+        if tag == "head":
+            self._in_head = True
+        elif self._in_head and tag not in _HEAD_TAGS:
+            self._in_head = False
+        if tag in ("svg", "math"):
+            self._foreign_depth += 1
         if tag == "html":
             self.lang = a.get("lang", "")
-        elif tag == "title" and self.title is None:
+        elif tag == "title" and self.title is None and not self._foreign_depth:
             self._in_title = True
             self.title = ""
+            self.title_in_body = not self._in_head
         elif tag == "meta":
             self.metas.append(a)
         elif tag == "link":
@@ -289,6 +381,10 @@ class PageParser(HTMLParser):
             self._skip_depth += 1
 
     def handle_endtag(self, tag):
+        if tag == "head":
+            self._in_head = False
+        if tag in ("svg", "math") and self._foreign_depth:
+            self._foreign_depth -= 1
         if tag == "title":
             self._in_title = False
         elif tag == "script" and self._in_jsonld:
@@ -312,7 +408,7 @@ class PageParser(HTMLParser):
             self.has_noscript_warning = True
         if self._heading:
             self._heading_buf.append(data)
-        if self._skip_depth == 0:
+        if self._skip_depth == 0 and not self._in_head:
             self.text_parts.append(data)
 
     # convenience accessors -------------------------------------------------
@@ -322,6 +418,11 @@ class PageParser(HTMLParser):
             if m.get("name", "").lower() == key or m.get("property", "").lower() == key:
                 return m.get("content", "").strip()
         return None
+
+    def meta_all(self, key: str) -> list[str]:
+        key = key.lower()
+        return [m.get("content", "").strip() for m in self.metas
+                if m.get("name", "").lower() == key or m.get("property", "").lower() == key]
 
     def link_rel(self, rel: str) -> list:
         rel = rel.lower()
