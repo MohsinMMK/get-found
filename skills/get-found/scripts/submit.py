@@ -8,7 +8,7 @@ Credentials come only from environment variables — never put them in files or 
   BING_WEBMASTER_API_KEY           API key from Bing Webmaster Tools > Settings > API access
 
 IndexNow
-  submit.py indexnow-key --public-dir public            # create key + key file, store key in config
+  submit.py indexnow-key [--public-dir apps/web/public]  # create key + key file (default: config public_dir)
   submit.py indexnow --from-state                        # submit every new/changed/removed URL not yet pinged
   submit.py indexnow --urls https://site/a https://site/b [--dry-run]
 Google (property = config google.property, e.g. sc-domain:example.com or https://example.com/)
@@ -34,7 +34,7 @@ import urllib.parse
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _common import die, fetch, load_reference, now_iso, save_json  # noqa: E402
+from _common import die, fetch, find_state_dir, load_reference, now_iso, save_json, site_key  # noqa: E402
 from state import State, mark_submitted, pending  # noqa: E402
 
 
@@ -61,11 +61,30 @@ def show(r, label):
 
 # --------------------------------------------------------------------------- IndexNow
 
+FRAMEWORK_MARKERS = ("package.json", "next.config.js", "next.config.mjs", "next.config.ts", "astro.config.mjs", "astro.config.ts",
+                     "nuxt.config.ts", "svelte.config.js", "gatsby-config.js", "hugo.toml", "_config.yml", "vite.config.ts",
+                     "vite.config.js", "docusaurus.config.js", "eleventy.config.js", ".eleventy.js", "index.html")
+
+
 def cmd_indexnow_key(st: State, a):
     cfg = st.config()
+    repo = st.dir.resolve().parent
+    if a.public_dir:
+        out_dir = Path(a.public_dir)
+    elif cfg.get("public_dir"):
+        out_dir = repo / cfg["public_dir"]  # stored relative to the repo root (the dir holding .get-found/)
+    else:
+        die("which dir is served at the site root? pass --public-dir (e.g. public, static, apps/web/public), "
+            "or record it with `state.py init --force --app-dir <app>`")
+    if not out_dir.is_dir():
+        if not a.create:
+            die(f"{out_dir} does not exist — a key file there would never be deployed. Check the app's public/static dir "
+                "(monorepos: apps/<app>/public), or pass --create if this really is the right place.")
+        out_dir.mkdir(parents=True, exist_ok=True)
+    app_dir = out_dir.resolve().parent
+    if not any((app_dir / m).exists() for m in FRAMEWORK_MARKERS) and out_dir.resolve() != repo:
+        print(f"warning: no package.json or framework config next to {out_dir} — is this the deployed app's public dir?", file=sys.stderr)
     key = (cfg.get("indexnow") or {}).get("key") or secrets.token_hex(16)
-    out_dir = Path(a.public_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / f"{key}.txt").write_text(key, encoding="utf-8")
     cfg.setdefault("indexnow", {})["key"] = key
     cfg["indexnow"]["key_location"] = None
@@ -80,39 +99,64 @@ def cmd_indexnow(st: State, a):
     key = os.environ.get("INDEXNOW_KEY") or (cfg.get("indexnow") or {}).get("key")
     if not key:
         die("no IndexNow key — run `submit.py indexnow-key --public-dir <your static dir>` first")
-    site = cfg.get("site_url") or a.site
-    host = urllib.parse.urlsplit(site).hostname
-    key_loc = (cfg.get("indexnow") or {}).get("key_location") or f"{site.rstrip('/')}/{key}.txt"
+    site = a.site or cfg.get("canonical_url") or cfg.get("site_url")
+    if not site:
+        die("no site: pass --site or set site_url in config")
+    want = site_key(urllib.parse.urlsplit(site).hostname or "")
     urls = a.urls or []
     if a.from_state:
         urls = [u for u, _ in pending(st, "indexnow")]
-    urls = [u for u in dict.fromkeys(urls) if urllib.parse.urlsplit(u).hostname == host]
+    urls = list(dict.fromkeys(urls))
+    # IndexNow takes one host per request and the key must be served on that host. Group by the
+    # URLs' real host, accepting www/apex variants of the site (a site set up as example.com that
+    # redirects to www.example.com stores www URLs).
+    groups: dict[str, list[str]] = {}
+    dropped = []
+    for u in urls:
+        h = (urllib.parse.urlsplit(u).hostname or "").lower()
+        (groups.setdefault(h, []) if h and site_key(h) == want else dropped).append(u)
+    if dropped:
+        print(f"skipping {len(dropped)} URLs not on {want} (e.g. {dropped[0]})", file=sys.stderr)
     if not urls:
         print("nothing to submit to IndexNow")
         return
-    kr = fetch(key_loc)
-    if not (kr.ok and kr.text().strip() == key):
-        die(f"key file {key_loc} is not live (HTTP {kr.status or kr.error}). Deploy it first — engines reject submissions otherwise.")
-    total = 0
-    for i in range(0, len(urls), ep["max_urls_per_request"]):
-        batch = urls[i:i + ep["max_urls_per_request"]]
-        body = {"host": host, "key": key, "keyLocation": key_loc, "urlList": batch}
-        if a.dry_run:
-            print(json.dumps(body, indent=2)[:2000])
-            continue
-        r = jpost(a.endpoint or ep["endpoint"], body)
-        meaning = ep["responses"].get(str(r.status), "unexpected response")
-        print(f"IndexNow {len(batch)} URLs → HTTP {r.status or r.error}: {meaning}")
-        if r.status in (200, 202):
-            total += len(batch)
-            if a.from_state or st.p("pages.json").exists():
-                mark_submitted(st, "indexnow", batch)
-        else:
-            die(f"IndexNow rejected the batch: {r.text()[:300]}")
+    if not groups:
+        die(f"none of the {len(urls)} URLs are on {want} — check site_url in config (state.py init --force --site ...) or pass --site")
+    configured = (cfg.get("indexnow") or {}).get("key_location")
+    total, failed = 0, []
+    for host, host_urls in groups.items():
+        scheme = urllib.parse.urlsplit(host_urls[0]).scheme or "https"
+        key_loc = configured if configured and (urllib.parse.urlsplit(configured).hostname or "").lower() == host else f"{scheme}://{host}/{key}.txt"
+        kr = fetch(key_loc)
+        if not (kr.ok and kr.text().strip() == key):
+            msg = f"key file {key_loc} is not live (HTTP {kr.status or kr.error})"
+            if a.dry_run:
+                print(f"warning: {msg} — deploy it before a real submission", file=sys.stderr)
+            else:
+                print(f"{msg}. Deploy it first — engines reject submissions otherwise.", file=sys.stderr)
+                failed.append(host)
+                continue
+        for i in range(0, len(host_urls), ep["max_urls_per_request"]):
+            batch = host_urls[i:i + ep["max_urls_per_request"]]
+            body = {"host": host, "key": key, "keyLocation": key_loc, "urlList": batch}
+            if a.dry_run:
+                print(json.dumps(body, indent=2)[:2000])
+                continue
+            r = jpost(a.endpoint or ep["endpoint"], body)
+            meaning = ep["responses"].get(str(r.status), "unexpected response")
+            print(f"IndexNow {host}: {len(batch)} URLs → HTTP {r.status or r.error}: {meaning}")
+            if r.status in (200, 202):
+                total += len(batch)
+                if a.from_state or st.p("pages.json").exists():
+                    mark_submitted(st, "indexnow", batch)
+            else:
+                die(f"IndexNow rejected the batch: {r.text()[:300]}")
     if total:
         st.history("indexnow", count=total)
         left = len(pending(st, "indexnow"))
         _touch(st, "indexnow", f"{total} URLs submitted {now_iso()[:10]}; {left} pending", force_status="pass" if not left else "warn")
+    if failed:
+        die(f"nothing submitted for {', '.join(failed)}: key file not live")
 
 
 # --------------------------------------------------------------------------- Google
@@ -275,9 +319,10 @@ def _touch(st: State, item: str, evidence: str, force_status: str | None = None)
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--state", default=".get-found")
+    ap.add_argument("--state", help="state dir (default: nearest .get-found/ up to the git root)")
     sub = ap.add_subparsers(dest="cmd", required=True)
-    s = sub.add_parser("indexnow-key"); s.add_argument("--public-dir", required=True, help="dir served at the site root (public/, static/, dist/)")
+    s = sub.add_parser("indexnow-key"); s.add_argument("--public-dir", help="dir served at the site root (default: config public_dir, relative to the repo root)")
+    s.add_argument("--create", action="store_true", help="create --public-dir if it does not exist")
     s = sub.add_parser("indexnow"); s.add_argument("--urls", nargs="*"); s.add_argument("--from-state", action="store_true")
     s.add_argument("--dry-run", action="store_true"); s.add_argument("--endpoint"); s.add_argument("--site")
     s = sub.add_parser("google"); s.add_argument("action", choices=["sites", "sitemaps", "submit-sitemap", "inspect", "performance"])
@@ -287,7 +332,7 @@ def main():
     s = sub.add_parser("bing"); s.add_argument("action", choices=["sites", "quota", "sitemaps", "submit-sitemap", "queries", "submit-urls"])
     s.add_argument("args", nargs="*"); s.add_argument("--urls", nargs="*"); s.add_argument("--from-state", action="store_true"); s.add_argument("--out")
     a = ap.parse_args()
-    st = State(a.state).require()
+    st = State(find_state_dir(a.state)).require()
     {"indexnow-key": cmd_indexnow_key, "indexnow": cmd_indexnow, "google": cmd_google, "bing": cmd_bing}[a.cmd](st, a)
 
 
