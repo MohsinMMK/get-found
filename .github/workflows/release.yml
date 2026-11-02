@@ -1,0 +1,32 @@
+# Push a tag like v1.0.1 to test, package skills/get-found as get-found.zip and publish a GitHub Release.
+# Release notes come from .github/release-notes/<tag>.md when present, otherwise GitHub generates them.
+name: release
+on:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Test
+        run: python -m unittest discover -s tests -v
+      - name: Package skill (top-level folder get-found/, as Claude.ai expects)
+        run: cd skills && zip -r ../get-found.zip get-found -x "*/__pycache__/*"
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          NOTES=".github/release-notes/${TAG}.md"
+          if [ -f "$NOTES" ]; then ARGS=(--notes-file "$NOTES"); else ARGS=(--generate-notes); fi
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" get-found.zip --clobber
+          else
+            gh release create "$TAG" get-found.zip --title "get-found $TAG" "${ARGS[@]}"
+          fi

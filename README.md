@@ -108,6 +108,7 @@ Setup, maintenance and content all read and write the same ledger and keyword ma
 python3 -m unittest discover -s tests -v     # runs against a local fixture site
 claude plugin validate .
 ```
+Releases: bump `version` in `.claude-plugin/plugin.json` and `skills/get-found/SKILL.md`, add `.github/release-notes/vX.Y.Z.md`, update CHANGELOG.md, then push the tag `vX.Y.Z` — the release workflow runs the tests and publishes `get-found.zip`.
 Facts were verified against official documentation on 2026-11-02. If a vendor changes something and the live refresh catches it in your project, please open an issue or PR with the override and the source link.
 
 ## License
