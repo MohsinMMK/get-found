@@ -4,7 +4,7 @@ description: Make a website findable by Google, Bing and AI answer engines (Chat
 license: MIT
 compatibility: Python 3.9+ (standard library). Needs network access to the site and to official docs. Optional - google-auth + requests (Search Console API), Pillow (OG images), env vars BING_WEBMASTER_API_KEY, GOOGLE_APPLICATION_CREDENTIALS or GSC_ACCESS_TOKEN.
 metadata:
-  version: "1.0.0"
+  version: "1.0.1"
   repository: "https://github.com/MohsinMMK/get-found"
   rules-verified: "2026-11-02"
 ---

@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from pathlib import Path
 
-VERSION = "1.0.0"
+VERSION = "1.0.1"
 SKILL_DIR = Path(__file__).resolve().parent.parent
 REFERENCES = SKILL_DIR / "references"
 USER_AGENT = f"Mozilla/5.0 (compatible; get-found-audit/{VERSION}; +https://github.com/MohsinMMK/get-found)"

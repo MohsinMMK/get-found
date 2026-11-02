@@ -205,6 +205,22 @@ class AuditAndStateTests(unittest.TestCase):
         finally:
             site.close()
 
+    def test_root_without_slash_is_one_page(self):
+        def mutate(s):
+            sm = s.dir / "sitemap.xml"
+            sm.write_text(sm.read_text().replace(f"<loc>{s.base}/</loc>", f"<loc>{s.base}</loc>"))
+        site = Site(mutate=mutate)
+        try:
+            run(SCRIPTS / "state.py", "init", "--site", site.base, "--type", "saas", cwd=self.proj)
+            _, rep = self.audit(site)
+            self.assertNotIn("duplicate-title", {i["code"] for i in rep["issues"]})
+            roots = [p["url"] for p in rep["pages"] if p["url"].rstrip("/") == site.base]
+            self.assertEqual(len(roots), 1, roots)
+            broken = [i for i in rep["issues"] if i["code"] == "http-404"]
+            self.assertTrue(all("linked from" in i["message"] or not i.get("url", "").endswith("deleted-page.html") for i in broken))
+        finally:
+            site.close()
+
     def test_keyword_check(self):
         site = Site()
         try:

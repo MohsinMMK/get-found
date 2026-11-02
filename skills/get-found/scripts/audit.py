@@ -439,6 +439,7 @@ def site_checks(root: str, th: dict, state_dir: Path | None, config: dict, iss: 
 
 def crawl(root: str, seeds: list[str], max_pages: int, workers: int, th: dict, only: bool) -> tuple[dict, bool]:
     pages: dict[str, dict] = {}
+    referrers: dict[str, list] = defaultdict(list)
     og_cache: dict = {}
     queue = list(dict.fromkeys(seeds))
     queued = set(queue)
@@ -456,9 +457,18 @@ def crawl(root: str, seeds: list[str], max_pages: int, workers: int, th: dict, o
                 if only:
                     continue
                 for link in res.get("links", []):
+                    if len(referrers[link]) < 3:
+                        referrers[link].append(res["url"])
                     if link not in queued and not SKIP_EXT.search(urllib.parse.urlsplit(link).path) and "?" not in link:
                         queued.add(link)
                         queue.append(link)
+    for url, p in pages.items():
+        if referrers.get(url):
+            p["linked_from"] = referrers[url]
+            if p.get("status") and p["status"] >= 400:
+                for i in p.get("issues", []):
+                    if i["code"].startswith("http-"):
+                        i["message"] += f" — linked from {', '.join(path_of(r) for r in referrers[url])}"
     return pages, bool(queue)
 
 
@@ -474,8 +484,18 @@ def summarize(pages: dict, site: dict, issues: Issues, sitemap_urls: dict, th: d
         for val, urls in groups.items():
             if len(urls) > 1:
                 issues.add(item, "warn", f"duplicate-{field}", f"{len(urls)} pages share the same {field}: '{val[:70]}' ({', '.join(path_of(x) for x in urls[:5])})")
+    noindexed = [u for u, p in html_pages.items() if p.get("noindex")]
+    if noindexed:
+        groups = Counter("/" + (urllib.parse.urlsplit(u).path.strip("/").split("/")[0]) for u in noindexed)
+        top = ", ".join(f"{g} ({n})" for g, n in groups.most_common(6))
+        issues.add("crawlability", "info", "noindex-summary",
+                   f"{len(noindexed)} of {len(html_pages)} reachable HTML pages are noindex: {top}. Fine for account/cart/legal pages; make sure products, categories and content you want found are not in this list.")
+        sell = [u for u in noindexed if re.search(r"/(products?|shop|collections?|categor(y|ies)|store|pricing|services?)(/|$)", urllib.parse.urlsplit(u).path)]
+        if len(sell) >= 3:
+            issues.add("crawlability", "warn", "commercial-pages-noindex",
+                       f"{len(sell)} product/shop/category pages are noindex (e.g. {', '.join(path_of(u) for u in sell[:3])}) — they can't appear in Google, Bing or AI shopping answers. Intended (pre-launch) or a leftover gate?")
     if sitemap_urls:
-        sm = set(u.rstrip("/") for u in sitemap_urls)
+        sm = set((normalize_url(u) or u).rstrip("/") for u in sitemap_urls)
         for u, p in indexable.items():
             canon = (p.get("canonical") or u).rstrip("/")
             if u.rstrip("/") not in sm and canon == u.rstrip("/"):
@@ -620,6 +640,7 @@ def main():
             inv = (load_json(state_dir / "pages.json", default={}) or {}).get("pages", {})
             known = [u for u, rec in inv.items() if not rec.get("removed") and same_site(u, root)]
         seeds = [root] + [u for u in sitemap_urls if same_site(u, root)] + known  # known: re-check pages we tracked before
+        seeds = list(dict.fromkeys(filter(None, (normalize_url(u) for u in seeds))))
         only = False
     pages, truncated = crawl(root, seeds, args.max_pages if not args.urls else len(seeds), args.workers, th, only)
     for p in pages.values():
