@@ -31,6 +31,7 @@ class Robots:
         self._parse(text or "")
 
     def _parse(self, text: str):
+        text = text.lstrip("\ufeff")  # a UTF-8 BOM would otherwise hide the first User-agent line
         agents: list[str] = []
         rules: list[tuple[str, str]] = []
         last_was_agent = False
