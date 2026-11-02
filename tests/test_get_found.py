@@ -209,6 +209,8 @@ class AuditAndStateTests(unittest.TestCase):
         def mutate(s):
             sm = s.dir / "sitemap.xml"
             sm.write_text(sm.read_text().replace(f"<loc>{s.base}/</loc>", f"<loc>{s.base}</loc>"))
+            about = s.dir / "about.html"
+            about.write_text(about.read_text().replace('<a href="/">Home</a>', '<a href="/">Home</a> <a href="/missing.html">Old link</a>'))
         site = Site(mutate=mutate)
         try:
             run(SCRIPTS / "state.py", "init", "--site", site.base, "--type", "saas", cwd=self.proj)
@@ -216,8 +218,9 @@ class AuditAndStateTests(unittest.TestCase):
             self.assertNotIn("duplicate-title", {i["code"] for i in rep["issues"]})
             roots = [p["url"] for p in rep["pages"] if p["url"].rstrip("/") == site.base]
             self.assertEqual(len(roots), 1, roots)
-            broken = [i for i in rep["issues"] if i["code"] == "http-404"]
-            self.assertTrue(all("linked from" in i["message"] or not i.get("url", "").endswith("deleted-page.html") for i in broken))
+            missing = [i for i in rep["issues"] if i["code"] == "http-404" and (i.get("url") or "").endswith("/missing.html")]
+            self.assertEqual(len(missing), 1)
+            self.assertIn("linked from /about.html", missing[0]["message"])
         finally:
             site.close()
 
