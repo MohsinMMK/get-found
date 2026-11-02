@@ -1,0 +1,30 @@
+{
+  "_about": "Audit thresholds. 'official' values come from platform docs (verified 2026-11-02); 'heuristic' values are industry rules of thumb (Google sets no title/description length limit — it truncates by pixel width). Override per project in .get-found/thresholds.override.json.",
+  "title_min": 20,
+  "title_max": 65,
+  "description_min": 70,
+  "description_max": 165,
+  "generic_titles": ["home", "homepage", "untitled", "document", "index", "welcome", "react app", "vite app", "vite + react", "vite + react + ts", "create next app", "next.js app", "my app", "new page", "lovable app", "lovable generated project", "bolt app", "astro", "nuxt app", "sveltekit app", "landing page", "page"],
+  "og_min_width": 1200,
+  "og_min_height": 630,
+  "og_ratio_min": 1.5,
+  "og_ratio_max": 2.1,
+  "og_max_bytes": 614400,
+  "og_target_bytes": 307200,
+  "html_head_max_bytes": 307200,
+  "html_max_bytes": 2097152,
+  "csr_min_words": 60,
+  "thin_words": 100,
+  "robots_max_bytes": 512000,
+  "sitemap_max_urls": 50000,
+  "sitemap_max_bytes": 52428800,
+  "sitemap_max_files": 60,
+  "retired_rich_result_types": ["FAQPage", "HowTo", "ClaimReview", "SpecialAnnouncement"],
+  "_sources": {
+    "og_max_bytes": "WhatsApp link previews: image < 600 KB, <head> within first 300 KB of HTML (developers.facebook.com/documentation/business-messaging/whatsapp/link-previews/)",
+    "og_min": "Facebook recommends >= 1200x630, ~1.91:1, max 8 MB; X summary_large_image is 2:1, < 5 MB",
+    "html_max_bytes": "Googlebot reads the first 2 MB of uncompressed HTML (developers.google.com/search/docs/crawling-indexing/googlebot)",
+    "robots_max_bytes": "RFC 9309: crawlers must parse at least 500 KiB",
+    "sitemap": "50,000 URLs / 50 MB uncompressed per file (Google + Bing)"
+  }
+}

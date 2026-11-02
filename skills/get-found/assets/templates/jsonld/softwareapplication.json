@@ -1,0 +1,10 @@
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "Product Name",
+  "applicationCategory": "BusinessApplication",
+  "operatingSystem": "Web",
+  "url": "https://example.com/",
+  "offers": {"@type": "Offer", "price": "0", "priceCurrency": "USD"},
+  "_note": "Add aggregateRating ONLY from real, on-page reviews. Remove this _note key."
+}

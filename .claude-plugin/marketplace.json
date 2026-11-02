@@ -1,0 +1,15 @@
+{
+  "name": "get-found",
+  "description": "get-found: make any website findable by Google, Bing and AI answer engines — and keep it that way.",
+  "owner": {
+    "name": "Mohammed Mohsin Khan",
+    "url": "https://github.com/MohsinMMK"
+  },
+  "plugins": [
+    {
+      "name": "get-found",
+      "source": "./",
+      "description": "Lifetime SEO + AEO skill: Search Console, Bing, IndexNow, sitemap, AI bots, titles, preview images, structured data, directories, keywords and a weekly blog, tracked in a project ledger and re-verified against live official docs every run."
+    }
+  ]
+}

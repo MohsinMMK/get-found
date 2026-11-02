@@ -1,0 +1,39 @@
+# .github/workflows/get-found.yml — optional automation for get-found.
+# After each deploy: audit changed pages, ping IndexNow for new/changed/removed URLs,
+# and commit the updated .get-found ledger. Weekly: full audit + docs refresh.
+# Requires the get-found skill vendored at .claude/skills/get-found (or adjust SKILL path).
+# Secrets (optional): BING_WEBMASTER_API_KEY, GSC_SERVICE_ACCOUNT_JSON.
+name: get-found
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 3 * * 1"        # Mondays 03:17 UTC
+  deployment_status:             # fires when your host reports a deployment
+permissions:
+  contents: write
+jobs:
+  getfound:
+    if: github.event_name != 'deployment_status' || (github.event.deployment_status.state == 'success' && github.event.deployment.environment == 'Production')
+    runs-on: ubuntu-latest
+    env:
+      SKILL: .claude/skills/get-found/scripts
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - name: Docs refresh (weekly run only)
+        if: github.event_name == 'schedule'
+        run: python3 $SKILL/rules.py refresh || true
+      - name: Audit live site
+        run: python3 $SKILL/audit.py --state .get-found --max-pages 500 || true
+      - name: Update ledger
+        run: python3 $SKILL/state.py ingest "$(ls -t .get-found/reports/audit-*.json | head -1)"
+      - name: IndexNow
+        run: python3 $SKILL/submit.py indexnow --from-state
+      - name: Commit ledger
+        run: |
+          git config user.name "get-found-bot"
+          git config user.email "get-found-bot@users.noreply.github.com"
+          git add .get-found
+          git diff --cached --quiet || git commit -m "chore(get-found): update ledger [skip ci]"
+          git push

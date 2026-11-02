@@ -1,0 +1,232 @@
+{
+  "_about": "Baseline registry of crawlers the audit checks against robots.txt. Verified against vendor docs on 2026-11-02. Categories: search-engine (classic search, also feeds AI features), search (AI answer-engine index), user (fetches a page when a person asks the assistant), training (model-training crawlers or opt-out control tokens), preview (social link-preview fetchers). Add/rename bots per project in .get-found/ai-bots.override.json, e.g. {\"bots\": {\"append\": [{...}]}} — rules.py ai-bots lists unclassified agents.",
+  "verified": "2026-11-02",
+  "bots": [
+    {
+      "token": "Googlebot",
+      "vendor": "Google",
+      "category": "search-engine",
+      "doc": "https://developers.google.com/crawling/docs/crawlers-fetchers/google-common-crawlers",
+      "note": "Also the crawler for AI Overviews / AI Mode."
+    },
+    {
+      "token": "Bingbot",
+      "vendor": "Microsoft",
+      "category": "search-engine",
+      "doc": "https://www.bing.com/webmasters/help/which-crawlers-does-bing-use-8c184ec0",
+      "note": "Bing index grounds Copilot and partner answer engines."
+    },
+    {
+      "token": "Applebot",
+      "vendor": "Apple",
+      "category": "search-engine",
+      "doc": "https://support.apple.com/en-us/119829",
+      "note": "Siri, Spotlight, Safari suggestions; falls back to Googlebot rules if not named."
+    },
+    {
+      "token": "OAI-SearchBot",
+      "vendor": "OpenAI",
+      "category": "search",
+      "doc": "https://developers.openai.com/api/docs/bots",
+      "note": "Required to appear in ChatGPT search results."
+    },
+    {
+      "token": "Claude-SearchBot",
+      "vendor": "Anthropic",
+      "category": "search",
+      "doc": "https://support.claude.com/en/articles/8896518"
+    },
+    {
+      "token": "PerplexityBot",
+      "vendor": "Perplexity",
+      "category": "search",
+      "doc": "https://docs.perplexity.ai/docs/resources/perplexity-crawlers"
+    },
+    {
+      "token": "Amzn-SearchBot",
+      "vendor": "Amazon",
+      "category": "search",
+      "doc": "https://developer.amazon.com/docs/amazonbot/amazonbot.html"
+    },
+    {
+      "token": "meta-webindexer",
+      "vendor": "Meta",
+      "category": "search",
+      "doc": "https://developers.facebook.com/documentation/sharing/webmasters/web-crawlers"
+    },
+    {
+      "token": "MistralAI-Index",
+      "vendor": "Mistral",
+      "category": "search",
+      "doc": "https://docs.mistral.ai/robots"
+    },
+    {
+      "token": "DuckAssistBot",
+      "vendor": "DuckDuckGo",
+      "category": "search",
+      "doc": "https://duckduckgo.com/duckduckgo-help-pages/results/duckassistbot"
+    },
+    {
+      "token": "YouBot",
+      "vendor": "You.com",
+      "category": "search",
+      "doc": "https://you.com/docs/youbot"
+    },
+    {
+      "token": "ChatGPT-User",
+      "vendor": "OpenAI",
+      "category": "user",
+      "doc": "https://developers.openai.com/api/docs/bots"
+    },
+    {
+      "token": "Claude-User",
+      "vendor": "Anthropic",
+      "category": "user",
+      "doc": "https://support.claude.com/en/articles/8896518"
+    },
+    {
+      "token": "Perplexity-User",
+      "vendor": "Perplexity",
+      "category": "user",
+      "doc": "https://docs.perplexity.ai/docs/resources/perplexity-crawlers"
+    },
+    {
+      "token": "MistralAI-User",
+      "vendor": "Mistral",
+      "category": "user",
+      "doc": "https://docs.mistral.ai/robots"
+    },
+    {
+      "token": "Amzn-User",
+      "vendor": "Amazon",
+      "category": "user",
+      "doc": "https://developer.amazon.com/docs/amazonbot/amazonbot.html"
+    },
+    {
+      "token": "meta-externalfetcher",
+      "vendor": "Meta",
+      "category": "user",
+      "doc": "https://developers.facebook.com/documentation/sharing/webmasters/web-crawlers"
+    },
+    {
+      "token": "GPTBot",
+      "vendor": "OpenAI",
+      "category": "training",
+      "doc": "https://developers.openai.com/api/docs/bots"
+    },
+    {
+      "token": "ClaudeBot",
+      "vendor": "Anthropic",
+      "category": "training",
+      "doc": "https://support.claude.com/en/articles/8896518"
+    },
+    {
+      "token": "Google-Extended",
+      "vendor": "Google",
+      "category": "training",
+      "doc": "https://developers.google.com/crawling/docs/crawlers-fetchers/google-common-crawlers",
+      "note": "Control token: Gemini training AND Gemini Apps/Vertex grounding. Does not affect Google Search or AI Overviews."
+    },
+    {
+      "token": "Applebot-Extended",
+      "vendor": "Apple",
+      "category": "training",
+      "doc": "https://support.apple.com/en-us/119829",
+      "note": "Control token only; does not crawl."
+    },
+    {
+      "token": "meta-externalagent",
+      "vendor": "Meta",
+      "category": "training",
+      "doc": "https://developers.facebook.com/documentation/sharing/webmasters/web-crawlers"
+    },
+    {
+      "token": "Amazonbot",
+      "vendor": "Amazon",
+      "category": "training",
+      "doc": "https://developer.amazon.com/docs/amazonbot/amazonbot.html"
+    },
+    {
+      "token": "CCBot",
+      "vendor": "Common Crawl",
+      "category": "training",
+      "doc": "https://commoncrawl.org/faq",
+      "note": "Open dataset used by many model builders."
+    },
+    {
+      "token": "Bytespider",
+      "vendor": "ByteDance",
+      "category": "training",
+      "doc": ""
+    },
+    {
+      "token": "MistralAI-Training",
+      "vendor": "Mistral",
+      "category": "training",
+      "doc": "https://docs.mistral.ai/robots"
+    },
+    {
+      "token": "cohere-training-data-crawler",
+      "vendor": "Cohere",
+      "category": "training",
+      "doc": ""
+    },
+    {
+      "token": "facebookexternalhit",
+      "vendor": "Meta",
+      "category": "preview",
+      "doc": "https://developers.facebook.com/documentation/sharing/webmasters/web-crawlers",
+      "note": "Facebook/WhatsApp/Messenger link previews."
+    },
+    {
+      "token": "Twitterbot",
+      "vendor": "X",
+      "category": "preview",
+      "doc": "https://developer.x.com/en/docs/x-for-websites/cards/guides/getting-started"
+    },
+    {
+      "token": "LinkedInBot",
+      "vendor": "LinkedIn",
+      "category": "preview",
+      "doc": "https://www.linkedin.com/help/linkedin/answer/46687"
+    },
+    {
+      "token": "Slackbot",
+      "vendor": "Slack",
+      "category": "preview",
+      "doc": "https://docs.slack.dev/messaging/unfurling-links-in-messages/"
+    },
+    {
+      "token": "Discordbot",
+      "vendor": "Discord",
+      "category": "preview",
+      "doc": ""
+    },
+    {
+      "token": "TelegramBot",
+      "vendor": "Telegram",
+      "category": "preview",
+      "doc": ""
+    },
+    {
+      "token": "Pinterestbot",
+      "vendor": "Pinterest",
+      "category": "preview",
+      "doc": "https://help.pinterest.com/en/business/article/pinterest-crawler"
+    },
+    {
+      "token": "OAI-AdsBot",
+      "vendor": "OpenAI",
+      "category": "other",
+      "doc": "https://developers.openai.com/api/docs/bots",
+      "note": "Checks landing pages of ChatGPT ads; not used for training. Only matters if the site runs ChatGPT ads."
+    }
+  ],
+  "ignored_tokens": [],
+  "probe_user_agents": {
+    "OAI-SearchBot": "Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; OAI-SearchBot/1.0; +https://openai.com/searchbot)",
+    "ChatGPT-User": "Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko); compatible; ChatGPT-User/1.0; +https://openai.com/bot",
+    "PerplexityBot": "Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; PerplexityBot/1.0; +https://perplexity.ai/perplexitybot)",
+    "Claude-SearchBot": "Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; Claude-SearchBot/1.0; +https://www.anthropic.com)"
+  }
+}

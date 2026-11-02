@@ -1,0 +1,31 @@
+{
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "Organization",
+      "@id": "https://example.com/#organization",
+      "name": "Brand Name",
+      "alternateName": "Brand",
+      "url": "https://example.com/",
+      "logo": {"@type": "ImageObject", "url": "https://example.com/logo-512.png", "width": 512, "height": 512},
+      "description": "One factual sentence about the organisation.",
+      "foundingDate": "2024",
+      "email": "hello@example.com",
+      "sameAs": [
+        "https://www.linkedin.com/company/brand",
+        "https://x.com/brand",
+        "https://www.instagram.com/brand",
+        "https://www.youtube.com/@brand"
+      ]
+    },
+    {
+      "@type": "WebSite",
+      "@id": "https://example.com/#website",
+      "name": "Brand Name",
+      "alternateName": "Brand",
+      "url": "https://example.com/",
+      "publisher": {"@id": "https://example.com/#organization"},
+      "inLanguage": "en"
+    }
+  ]
+}

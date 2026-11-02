@@ -1,0 +1,4 @@
+# Acme Health
+> Appointment booking software for small hospitals.
+## Docs
+- [Pricing](http://127.0.0.1:8765/#pricing): plans

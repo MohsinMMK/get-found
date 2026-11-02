@@ -1,0 +1,29 @@
+# get-found report — <Site> — <YYYY-MM>
+
+## Headline
+| Metric | This period | Previous | Change |
+|---|---|---|---|
+| Organic clicks (Google + Bing) | | | |
+| AI referrals / AI citations | | | |
+| Indexed pages | | | |
+
+## What moved and why
+- ...
+
+## Keywords
+- Wins: ...
+- Opportunities (pos 8–30 with impressions): ...
+- Losses: ...
+
+## AI visibility
+- Bing AI Performance: citations ..., top cited pages ...
+- Google generative AI impressions: ...
+- AI referrals by source: chatgpt.com ..., perplexity.ai ..., copilot ..., gemini ..., claude.ai ...
+- Bot access: all search/user bots allowed? CDN check date?
+
+## Checklist health
+Readiness ..% · failing: ... · overdue: ...
+Listings live: ../.. · Posts this month: ..
+
+## Next month (max 5)
+1. ...

@@ -1,0 +1,9 @@
+# get-found default: every search engine, AI answer engine, AI user-fetcher,
+# link-preview bot and AI-training crawler may read public pages.
+# Replace example.com, and list only paths that should never be crawled.
+User-agent: *
+Allow: /
+Disallow: /api/
+Disallow: /admin/
+
+Sitemap: https://example.com/sitemap.xml

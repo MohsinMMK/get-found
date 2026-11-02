@@ -1,0 +1,13 @@
+{
+  "@context": "https://schema.org",
+  "@type": "BlogPosting",
+  "headline": "How to Reduce Clinic No-Shows: 8 Tactics That Work",
+  "description": "Same as the meta description.",
+  "image": ["https://example.com/og/reduce-no-shows.png"],
+  "datePublished": "2026-11-02T09:00:00+05:30",
+  "dateModified": "2026-11-02T09:00:00+05:30",
+  "author": {"@type": "Person", "name": "Author Name", "url": "https://example.com/authors/author-name"},
+  "publisher": {"@id": "https://example.com/#organization"},
+  "mainEntityOfPage": "https://example.com/blog/reduce-no-shows",
+  "inLanguage": "en"
+}

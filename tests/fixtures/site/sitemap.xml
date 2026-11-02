@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+<url><loc>http://127.0.0.1:8765/</loc><lastmod>2026-10-20</lastmod></url>
+<url><loc>http://127.0.0.1:8765/about.html</loc><lastmod>2026-09-01</lastmod></url>
+<url><loc>http://127.0.0.1:8765/blog/first-post.html</loc><lastmod>2026-10-20T09:00:00+05:30</lastmod></url>
+<url><loc>http://127.0.0.1:8765/app.html</loc></url>
+<url><loc>http://127.0.0.1:8765/hidden.html</loc></url>
+<url><loc>http://127.0.0.1:8765/deleted-page.html</loc></url>
+</urlset>

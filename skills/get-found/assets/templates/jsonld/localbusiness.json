@@ -1,0 +1,16 @@
+{
+  "@context": "https://schema.org",
+  "@type": "MedicalClinic",
+  "@id": "https://example.com/#business",
+  "name": "Clinic Name",
+  "url": "https://example.com/",
+  "image": "https://example.com/photos/front.jpg",
+  "logo": "https://example.com/logo-512.png",
+  "telephone": "+91-40-0000-0000",
+  "address": {"@type": "PostalAddress", "streetAddress": "Road No. 1", "addressLocality": "Hyderabad", "addressRegion": "Telangana", "postalCode": "500034", "addressCountry": "IN"},
+  "geo": {"@type": "GeoCoordinates", "latitude": 17.41, "longitude": 78.44},
+  "openingHoursSpecification": [{"@type": "OpeningHoursSpecification", "dayOfWeek": ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"], "opens": "09:00", "closes": "20:00"}],
+  "priceRange": "₹₹",
+  "sameAs": ["https://www.facebook.com/clinic", "https://www.instagram.com/clinic"],
+  "_note": "Pick the most specific LocalBusiness subtype (MedicalClinic, Dentist, RealEstateAgent, Store, Restaurant...). NAP must match Google Business Profile exactly. Remove this _note key."
+}

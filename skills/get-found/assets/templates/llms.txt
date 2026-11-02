@@ -1,0 +1,16 @@
+# Brand Name
+
+> One sentence: what the business/product is, for whom, and where it operates.
+
+Optional short paragraph with the key facts an assistant should get right (pricing model, regions served, founding year, what you don't do).
+
+## Key pages
+- [Product / Services](https://example.com/services): what we offer
+- [Pricing](https://example.com/pricing): plans and what's included
+- [About](https://example.com/about): who we are, location, contact
+
+## Guides
+- [Most useful guide](https://example.com/blog/slug): one-line summary
+
+## Optional
+- [Changelog](https://example.com/changelog)

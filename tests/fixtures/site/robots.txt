@@ -1,0 +1,10 @@
+User-agent: *
+Allow: /
+
+User-agent: GPTBot
+Disallow: /
+
+User-agent: PerplexityBot
+Disallow: /
+
+Sitemap: http://127.0.0.1:8765/sitemap.xml

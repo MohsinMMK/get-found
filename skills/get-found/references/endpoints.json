@@ -1,0 +1,59 @@
+{
+  "_about": "API endpoints and limits used by submit.py. Verified 2026-11-02. If a call starts failing (404/410/changed body), re-read the doc URL, then override in .get-found/endpoints.override.json.",
+  "indexnow": {
+    "doc": "https://www.indexnow.org/documentation",
+    "endpoint": "https://api.indexnow.org/indexnow",
+    "engine_endpoints": {
+      "bing": "https://www.bing.com/indexnow",
+      "yandex": "https://yandex.com/indexnow",
+      "naver": "https://searchadvisor.naver.com/indexnow",
+      "seznam": "https://search.seznam.cz/indexnow",
+      "yep": "https://indexnow.yep.com/indexnow",
+      "amazon": "https://indexnow.amazonbot.amazon/indexnow"
+    },
+    "max_urls_per_request": 10000,
+    "key_rules": "8-128 chars of a-z A-Z 0-9 and '-'; served as UTF-8 text at /{key}.txt (or keyLocation on the same host)",
+    "min_resubmit_minutes": 10,
+    "responses": {
+      "200": "OK — received (not a promise of indexing)",
+      "202": "Accepted — key validation pending",
+      "400": "Bad request — invalid format",
+      "403": "Forbidden — key not valid / key file not found",
+      "422": "Unprocessable — URLs don't belong to the host or key doesn't match",
+      "429": "Too many requests — slow down (possible spam signal)"
+    }
+  },
+  "google": {
+    "doc": "https://developers.google.com/webmaster-tools/v1/api_reference_index",
+    "webmasters_base": "https://www.googleapis.com/webmasters/v3",
+    "inspect_url": "https://searchconsole.googleapis.com/v1/urlInspection/index:inspect",
+    "scope": "https://www.googleapis.com/auth/webmasters",
+    "readonly_scope": "https://www.googleapis.com/auth/webmasters.readonly",
+    "inspect_daily_quota_per_site": 2000,
+    "inspect_soft_limit_per_run": 50,
+    "search_analytics_max_rows": 25000,
+    "data_delay_days": "2-3",
+    "indexing_api_allowed_for": "JobPosting and BroadcastEvent (in VideoObject) pages; news/UGC/real-time content only via Google's application program (Oct 2026). Never for regular pages otherwise.",
+    "sitemap_ping": "retired 2023 (returns 404) — submit via API/Search Console/robots.txt instead"
+  },
+  "bing": {
+    "doc": "https://learn.microsoft.com/en-us/bingwebmaster/getting-started",
+    "base": "https://ssl.bing.com/webmaster/api.svc/json",
+    "auth": "API key (?apikey=) from Bing Webmaster Tools > Settings > API Access, or OAuth 2.0 (webmaster.read / webmaster.manage)",
+    "submit_url_batch_method": "SubmitUrlbatch",
+    "submit_url_batch_max": 500,
+    "methods": [
+      "GetUserSites",
+      "GetUrlSubmissionQuota",
+      "SubmitUrlbatch",
+      "SubmitUrl",
+      "SubmitFeed",
+      "GetFeeds",
+      "GetQueryStats",
+      "GetPageStats",
+      "GetCrawlIssues",
+      "GetUrlInfo"
+    ],
+    "note": "SOAP/POX endpoints retired 2026-08-31; JSON only. Microsoft recommends IndexNow as the primary real-time submission method; URL Submission API remains for quota-based submission."
+  }
+}
