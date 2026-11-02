@@ -71,16 +71,18 @@ def render(job: dict, defaults: dict):
     margin = 80
     d.rectangle([0, H - 12, W, H], fill=hex2rgb(o["accent"]))
     y = margin
+    brand_font = load_font(o.get("font"), 30)
     if o.get("logo") and Path(o["logo"]).exists():
         logo = Image.open(o["logo"]).convert("RGBA")
         logo.thumbnail((220, 72))
         img.paste(logo, (margin, y), logo)
+        if o.get("brand"):  # beside the logo, so it can never collide with the title or subtitle below
+            d.text((margin + logo.width + 24, y + max(0, (logo.height - 30) // 2)), o["brand"],
+                   font=brand_font, fill=hex2rgb(o["accent"]))
         y += logo.height + 28
-    brand_font = load_font(o.get("font"), 30)
-    if o.get("brand"):
-        d.text((margin, y if not o.get("logo") else H - margin - 40), o["brand"], font=brand_font, fill=hex2rgb(o["accent"]))
-        if not o.get("logo"):
-            y += 60
+    elif o.get("brand"):
+        d.text((margin, y), o["brand"], font=brand_font, fill=hex2rgb(o["accent"]))
+        y += 60
     for size in range(72, 39, -6):
         f = load_font(o.get("font"), size)
         lines = wrap(d, o["title"], f, W - 2 * margin)
@@ -116,7 +118,12 @@ def main():
     a = ap.parse_args()
     defaults = {k: getattr(a, k) for k in ("subtitle", "brand", "bg", "fg", "accent", "logo", "font", "format")}
     if a.batch:
-        for job in json.loads(Path(a.batch).read_text(encoding="utf-8")):
+        defaults.pop("subtitle")  # a subtitle is per page; --subtitle must not land on every batch image
+        for i, job in enumerate(json.loads(Path(a.batch).read_text(encoding="utf-8"))):
+            missing = [k for k in ("title", "out") if not job.get(k)]
+            if missing:
+                print(f"skipping job {i}: missing {', '.join(missing)}", file=sys.stderr)
+                continue
             render(job, defaults)
     elif a.title and a.out:
         render({"title": a.title, "out": a.out}, defaults)
