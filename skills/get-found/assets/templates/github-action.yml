@@ -1,7 +1,10 @@
 # .github/workflows/get-found.yml — optional automation for get-found.
-# After each deploy: audit changed pages, ping IndexNow for new/changed/removed URLs,
-# and commit the updated .get-found ledger. Weekly: full audit + docs refresh.
-# Requires the get-found skill vendored at .claude/skills/get-found (or adjust SKILL path).
+# After each deploy: audit the live site (up to --max-pages), ping IndexNow for new/changed/removed
+# URLs, and commit the updated .get-found ledger. Weekly: the same plus a live-docs refresh.
+# Needs the skill's scripts in the repo: a plugin or ~/.claude install is not visible to CI, so vendor
+# skills/get-found at .claude/skills/get-found (or point SKILL at wherever it lives).
+# rules-cache/ is gitignored; refresh still reports changes, because each source's hash is in rules.json.
+# Monorepo: run from the repo root; .get-found/ lives there and public_dir comes from config.json.
 # Secrets (optional): BING_WEBMASTER_API_KEY, GSC_SERVICE_ACCOUNT_JSON.
 name: get-found
 on:
@@ -35,5 +38,7 @@ jobs:
           git config user.name "get-found-bot"
           git config user.email "get-found-bot@users.noreply.github.com"
           git add .get-found
-          git diff --cached --quiet || git commit -m "chore(get-found): update ledger [skip ci]"
+          git diff --cached --quiet && exit 0
+          git commit -m "chore(get-found): update ledger [skip ci]"
+          git pull --rebase
           git push
