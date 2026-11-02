@@ -4,9 +4,11 @@
 All state lives in the project's .get-found/ directory (commit it; it holds no secrets).
 
   state.py init --site https://example.com --type saas [--framework nextjs] [--brand "Acme"] [--blog-prefix /blog/]
+               [--app-dir apps/web] [--public-dir apps/web/public]   # monorepos: which app is the website
+  state.py detect [--json]                 # framework / monorepo app detection (read-only)
   state.py status [--json]                 # every checklist item: status, last checked, next due
   state.py due [--days 0] [--json]         # what needs doing now (drives sync/check runs)
-  state.py ingest <audit.json>             # apply an audit report: ledger + page inventory + change detection
+  state.py ingest <audit.json> [--force]   # apply an audit report: ledger + page inventory + change detection
   state.py changes [--channel indexnow]    # URLs new/changed/removed since last submitted on a channel
   state.py submitted --channel indexnow --urls U1 U2 | --all-pending
   state.py mark <item> --status pass|warn|fail|manual|n/a [--evidence ".."] [--note ".."]
@@ -15,20 +17,26 @@ All state lives in the project's .get-found/ directory (commit it; it holds no s
   state.py listing <id> --status live --url https://... [--note ".."]
   state.py log "message"                   # append to history
 
-Use --state DIR to point at a state dir other than ./.get-found
+Without --state (or with the bare default .get-found) the state dir is found by walking up from
+the cwd to the git root, so commands work from apps/<app>/ in a monorepo; init creates it at the
+git root.
 """
 from __future__ import annotations
 
 import argparse
 import datetime as dt
 import json
+import re
+import os
 import sys
 import urllib.parse
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _common import VERSION, die, load_json, load_reference, now_iso, parse_date, path_of, save_json, today  # noqa: E402
+from _common import (VERSION, die, find_state_dir, load_json, load_reference, now_iso, parse_date,  # noqa: E402
+                     path_of, save_json, site_key, today)
 
+ARTICLE_TYPES = {"Article", "BlogPosting", "NewsArticle", "TechArticle"}
 SITE_TYPES = ["saas", "app", "ai-tool", "local", "ecommerce", "content", "portfolio", "docs", "agency", "nonprofit"]
 CHANNELS = ["indexnow", "google", "bing"]
 
@@ -92,12 +100,15 @@ def next_due(last_checked: str | None, cadence: int) -> str:
 def cmd_init(st: State, a):
     if st.p("config.json").exists() and not a.force:
         die(f"{st.dir}/config.json already exists (use --force to re-initialise; existing ledger is kept)")
-    site = a.site.rstrip("/")
+    cfg = st.config() if a.force else {}  # --force keeps every setting not given again on the command line
+    if not (a.site or cfg.get("site_url")):
+        die("--site is required")
+    site = (a.site or cfg["site_url"]).rstrip("/")
     if not urllib.parse.urlsplit(site).scheme:
         site = "https://" + site
     host = urllib.parse.urlsplit(site).hostname or ""
     apex = host[4:] if host.startswith("www.") else host
-    types = [t.strip() for raw in a.type for t in raw.split(",") if t.strip()]
+    types = [t.strip() for raw in (a.type or cfg.get("site_types") or ["saas"]) for t in raw.split(",") if t.strip()]
     bad = [t for t in types if t not in SITE_TYPES]
     if bad:
         die(f"unknown site type(s) {bad}; choose from {SITE_TYPES}")
@@ -108,7 +119,12 @@ def cmd_init(st: State, a):
         k, v = pair.split("=", 1)
         social[k.strip().lower()] = v.strip()
     a.type = types
-    cfg = st.config() if a.force else {}
+    old_blog = cfg.get("blog") or {}
+    prefixes = [p for p in (a.blog_prefix or []) if p]
+    blog_prefix = (prefixes[0] if len(prefixes) == 1 else prefixes) if prefixes else (old_blog.get("path_prefix") or "/blog/")
+    app = resolve_app(st, a, cfg)
+    if app.get("framework") and not a.framework and cfg.get("framework") in (None, "unknown"):
+        a.framework = app["framework"]
     cfg.update({
         "schema": 1,
         "created_with": f"get-found {VERSION}",
@@ -119,9 +135,12 @@ def cmd_init(st: State, a):
         "locale": a.locale or cfg.get("locale") or "en",
         "country": (a.country or cfg.get("country") or "").upper(),
         "verticals": a.vertical or cfg.get("verticals") or [],
-        "blog": {"path_prefix": a.blog_prefix, "cadence_days": a.blog_cadence},
+        "blog": {"path_prefix": blog_prefix, "cadence_days": a.blog_cadence or old_blog.get("cadence_days") or 7},
         "sitemaps": cfg.get("sitemaps") or [],
-        "sample_paths": cfg.get("sample_paths") or ["/", a.blog_prefix],
+        # sample a blog path for the bot matrix only when the user told us where the blog lives
+        "sample_paths": cfg.get("sample_paths") or ["/"] + prefixes,
+        "app_dir": app.get("app_dir"),
+        "public_dir": app.get("public_dir"),
         "google": cfg.get("google") or {"property": f"sc-domain:{apex}", "auth": "env:GOOGLE_APPLICATION_CREDENTIALS or env:GSC_ACCESS_TOKEN"},
         "bing": cfg.get("bing") or {"api_key_env": "BING_WEBMASTER_API_KEY"},
         "indexnow": cfg.get("indexnow") or {"key": None, "key_location": None},
@@ -154,6 +173,127 @@ def cmd_init(st: State, a):
     st.history("init", site=cfg["site_url"], types=a.type)
     print(f"initialised {st.dir}/ for {cfg['site_url']} ({', '.join(a.type)}) — {len(cl)} checklist items, "
           f"{len(st.listings()['listings'])} candidate listings")
+    if cfg.get("app_dir") not in (None, "."):
+        print(f"  website app: {cfg['app_dir']} (public dir {cfg.get('public_dir')})")
+
+
+# --------------------------------------------------------------------------- framework / monorepo detection
+
+FRAMEWORK_FILES = [
+    ("nextjs", ("next.config.js", "next.config.mjs", "next.config.ts", "next.config.cjs"), "public"),
+    ("astro", ("astro.config.mjs", "astro.config.ts", "astro.config.js", "astro.config.cjs"), "public"),
+    ("nuxt", ("nuxt.config.ts", "nuxt.config.js", "nuxt.config.mjs"), "public"),
+    ("sveltekit", ("svelte.config.js", "svelte.config.ts"), "static"),
+    ("react-router", ("react-router.config.ts", "react-router.config.js", "remix.config.js"), "public"),
+    ("gatsby", ("gatsby-config.js", "gatsby-config.ts", "gatsby-config.mjs"), "static"),
+    ("docusaurus", ("docusaurus.config.js", "docusaurus.config.ts"), "static"),
+    ("eleventy", (".eleventy.js", "eleventy.config.js", "eleventy.config.mjs", "eleventy.config.cjs"), "."),
+    ("hugo", ("hugo.toml", "hugo.yaml", "hugo.json"), "static"),
+    ("vite", ("vite.config.ts", "vite.config.js", "vite.config.mjs"), "public"),
+]
+PKG_FRAMEWORKS = {"next": "nextjs", "astro": "astro", "nuxt": "nuxt", "@sveltejs/kit": "sveltekit", "@remix-run/react": "react-router",
+                  "@react-router/dev": "react-router", "gatsby": "gatsby", "@docusaurus/core": "docusaurus", "vite": "vite"}
+INTERNAL_HINT = ("admin", "ops", "dashboard", "internal", "studio", "backoffice", "console", "cms", "storybook")
+
+
+def _framework_of(d: Path) -> tuple[str, str] | None:
+    spa = (d / "index.html").exists()  # vite also builds libraries; only an index.html makes it a site
+    for name, files, public in FRAMEWORK_FILES:
+        if any((d / f).exists() for f in files) and (name != "vite" or spa):
+            return name, public
+    pkg = load_json(d / "package.json", default=None) if (d / "package.json").exists() else None
+    if isinstance(pkg, dict):
+        deps = {**(pkg.get("dependencies") or {}), **(pkg.get("devDependencies") or {})}
+        for dep, name in PKG_FRAMEWORKS.items():
+            if dep in deps and (name != "vite" or spa):
+                return name, next(p for n, _, p in FRAMEWORK_FILES if n == name)
+    return None
+
+
+def _workspace_globs(root: Path) -> list[str]:
+    globs: list[str] = []
+    pkg = load_json(root / "package.json", default=None) if (root / "package.json").exists() else None
+    if isinstance(pkg, dict):
+        ws = pkg.get("workspaces")
+        globs += ws if isinstance(ws, list) else (ws or {}).get("packages", []) if isinstance(ws, dict) else []
+    pw = root / "pnpm-workspace.yaml"
+    if pw.exists():
+        in_pk = False
+        for line in pw.read_text(encoding="utf-8", errors="replace").splitlines():
+            if re.match(r"^packages\s*:", line):
+                in_pk = True
+                continue
+            if in_pk:
+                m = re.match(r"^\s*-\s*['\"]?([^'\"#]+?)['\"]?\s*(#.*)?$", line)
+                if m:
+                    globs.append(m.group(1).strip())
+                elif line.strip() and not line.startswith((" ", "\t")):
+                    in_pk = False
+    if not globs and any((root / f).exists() for f in ("turbo.json", "nx.json", "lerna.json")):
+        globs = ["apps/*", "packages/*"]
+    if not globs and (root / "apps").is_dir():
+        globs = ["apps/*"]
+    return [g for g in globs if not g.startswith("!")]
+
+
+def detect_apps(root: Path) -> dict:
+    """Find the deployable web app(s): the repo root itself, or workspace packages with a framework."""
+    root = root.resolve()
+    globs = _workspace_globs(root)
+    apps = []
+    seen = set()
+    for g in globs:
+        for d in sorted(root.glob(g.rstrip("/"))):
+            if not d.is_dir() or "node_modules" in d.parts or d in seen:
+                continue
+            seen.add(d)
+            fw = _framework_of(d)
+            if fw:
+                rel = d.relative_to(root).as_posix()
+                apps.append({"app_dir": rel, "framework": fw[0], "public_dir": (Path(rel) / fw[1]).as_posix() if fw[1] != "." else rel,
+                             "looks_internal": any(h in d.name.lower() for h in INTERNAL_HINT)})
+    root_fw = _framework_of(root)
+    return {"root": str(root), "monorepo": bool(globs), "workspace_globs": globs, "apps": apps,
+            "root_app": {"app_dir": ".", "framework": root_fw[0], "public_dir": root_fw[1]} if root_fw else None}
+
+
+def resolve_app(st: State, a, cfg: dict) -> dict:
+    """Pick the website app: --app-dir wins, then the stored one, then detection (ask when ambiguous)."""
+    root = st.dir.resolve().parent
+    if a.app_dir:
+        d = (root / a.app_dir).resolve() if not Path(a.app_dir).is_absolute() else Path(a.app_dir)
+        if not d.is_dir():
+            die(f"--app-dir {a.app_dir} is not a directory under {root}")
+        rel = os.path.relpath(d, root)
+        fw = _framework_of(d)
+        pub = a.public_dir or (os.path.normpath(os.path.join(rel, fw[1])) if fw else os.path.join(rel, "public"))
+        return {"app_dir": Path(rel).as_posix(), "public_dir": Path(pub).as_posix(), "framework": fw[0] if fw else None}
+    if cfg.get("app_dir"):
+        return {"app_dir": cfg["app_dir"], "public_dir": a.public_dir or cfg.get("public_dir")}
+    det = detect_apps(root)
+    apps = det["apps"]
+    if len(apps) > 1:
+        lines = "\n".join(f"  --app-dir {x['app_dir']:<28} ({x['framework']}{', looks internal/admin' if x['looks_internal'] else ''})" for x in apps)
+        die(f"monorepo with {len(apps)} web apps — say which one is the public website:\n{lines}\n"
+            "Re-run init with --app-dir <dir> (keep the one .get-found/ at the repo root; audit only the public app).")
+    pick = apps[0] if apps else det["root_app"]
+    if not pick:
+        return {"app_dir": ".", "public_dir": a.public_dir}
+    return {"app_dir": pick["app_dir"], "public_dir": a.public_dir or pick["public_dir"], "framework": pick["framework"]}
+
+
+def cmd_detect(st: State, a):
+    det = detect_apps(st.dir.resolve().parent)
+    if a.json:
+        print(json.dumps(det, indent=2))
+        return
+    print(f"repo root: {det['root']}{' (monorepo: ' + ', '.join(det['workspace_globs']) + ')' if det['monorepo'] else ''}")
+    if det["root_app"]:
+        print(f"  .  {det['root_app']['framework']}  public dir: {det['root_app']['public_dir']}")
+    for x in det["apps"]:
+        print(f"  {x['app_dir']}  {x['framework']}  public dir: {x['public_dir']}{'  (looks internal/admin)' if x['looks_internal'] else ''}")
+    if not det["apps"] and not det["root_app"]:
+        print("  no framework config found — see references/frameworks.md §Detect")
 
 
 def seed_listings(types: list[str], state_dir: Path, country: str | None = None, verticals: list | None = None):
@@ -193,10 +333,16 @@ def compute_due(st: State, horizon_days: int = 0):
             due.append({"item": iid, "reason": reason})
     # change-driven triggers
     pend = pending(st, "indexnow") if (cfg.get("indexnow") or {}).get("key") else []
-    pend_g = pending(st, "google")
-    if pend or pend_g:
-        n = len({u for u, _ in pend} | {u for u, _ in pend_g})
-        due.append({"item": "sync", "reason": f"{n} new/changed URLs not yet submitted — run sync"})
+    if pend:
+        due.append({"item": "sync", "reason": f"{len(pend)} new/changed URLs not yet sent to IndexNow — run sync (submit.py indexnow --from-state)"})
+    # Google has no submit API for ordinary pages: only count it once the project tracks the channel
+    # (API credentials present, or the google channel was marked submitted before), and say how to clear it.
+    if google_tracked(cfg, pages):
+        pend_g = pending(st, "google")
+        if pend_g:
+            due.append({"item": "sync", "reason": f"{len(pend_g)} new/changed URLs not yet submitted to Google — resubmit the sitemap "
+                                                  "(submit.py google submit-sitemap) or use URL Inspection → Request indexing, then "
+                                                  "`state.py submitted --channel google --all-pending`"})
     # blog cadence
     lp = last_post(st)
     cad = (cfg.get("blog") or {}).get("cadence_days", 7)
@@ -207,13 +353,27 @@ def compute_due(st: State, horizon_days: int = 0):
     return due
 
 
+def google_tracked(cfg: dict, pages: dict) -> bool:
+    if any(os.environ.get(k) for k in ("GOOGLE_APPLICATION_CREDENTIALS", "GSC_ACCESS_TOKEN")):
+        return True
+    return any((rec.get("submitted") or {}).get("google") for rec in pages.values())
+
+
+def blog_prefixes(cfg: dict) -> list[str]:
+    pfx = (cfg.get("blog") or {}).get("path_prefix") or "/blog/"
+    return [p for p in ([pfx] if isinstance(pfx, str) else pfx) if p]
+
+
 def last_post(st: State):
+    """Newest post date: pages under a blog prefix, or any non-home page marked up as an Article."""
     cfg = st.config()
-    prefix = (cfg.get("blog") or {}).get("path_prefix") or "/blog/"
+    prefixes = blog_prefixes(cfg)
     best = None
     for url, p in st.pages()["pages"].items():
         path = urllib.parse.urlsplit(url).path
-        if not path.startswith(prefix) or path.rstrip("/") == prefix.rstrip("/"):
+        in_blog = any(path.startswith(px) and path.rstrip("/") != px.rstrip("/") for px in prefixes)
+        is_article = path not in ("", "/") and bool(set(p.get("jsonld_types") or []) & ARTICLE_TYPES)
+        if not (in_blog or is_article):
             continue
         d = _date(p.get("date_published")) or _date(p.get("first_seen"))
         if d and (best is None or d > best):
@@ -268,21 +428,56 @@ def cmd_ingest(st: State, a):
     if not rep or rep.get("tool") != "get-found-audit":
         die(f"{a.report} is not a get-found audit report")
     now = now_iso(precise=True)
+    cfg = st.config()
+    # 0) is this report about the site this ledger tracks? (localhost/preview audits must not leak in)
+    rep_host = urllib.parse.urlsplit(rep.get("site") or "").hostname or ""
+    cfg_host = urllib.parse.urlsplit(cfg.get("site_url") or "").hostname or ""
+    if rep_host and cfg_host and site_key(rep_host) != site_key(cfg_host):
+        if not a.force:
+            die(f"{a.report} is an audit of {rep_host}, but this ledger tracks {cfg_host} — not ingesting. "
+                "For local/preview checks run audit.py without --state; if the site really moved, "
+                "run `state.py init --force --site <new url>` (or pass --force to ingest anyway).")
+        print(f"warning: ingesting a report for {rep_host} into the {cfg_host} ledger (--force)", file=sys.stderr)
+    elif rep_host and rep_host != cfg_host and rep.get("site"):
+        if cfg.get("canonical_url") != rep["site"]:
+            # e.g. config says example.com but it redirects to www.example.com: remember where pages really live
+            cfg["canonical_url"] = rep["site"]
+            st.save("config.json", cfg)
+            print(f"note: {cfg_host} redirects to {rep_host}; recorded canonical_url {rep['site']} (IndexNow submits for that host)")
+    partial = bool(rep.get("partial") or rep.get("truncated"))
     led = st.ledger()
-    # 1) ledger statuses for auditable items
+    # 1) ledger statuses for auditable items. A partial (--urls) or truncated audit skipped the
+    # cross-page checks, so it may only make an item worse, never better.
     rank = {"pass": 0, "warn": 1, "fail": 2}
     for iid, res in rep.get("items", {}).items():
         it = led["items"].setdefault(iid, {"status": "todo", "cadence_days": 30})
         prev = it.get("status")
+        if prev == "n/a":
+            continue
+        if partial and rank.get(res["status"], 0) <= rank.get(prev, 0):
+            continue
+        offsite = prev == "manual" or bool(it.get("manual_pending"))
         new_status = res["status"]
-        if prev == "manual" and new_status == "pass":
-            new_status = "manual"  # audit only covers the on-site half; an off-site step is still open
+        if offsite:
+            it["manual_pending"] = True  # an off-site step is still open, whatever the on-site half says
+            if new_status == "pass":
+                new_status = "manual"
         it["status"] = new_status
         it["last_checked"] = now
-        if prev != res["status"]:
+        if prev != new_status:
             it["last_changed"] = now
-        it["evidence"] = f"audit {rep['generated'][:10]}: {res['errors']} errors, {res['warnings']} warnings" + ("; off-site step pending" if new_status == "manual" else "")
+        it["evidence"] = (f"{'partial ' if partial else ''}audit {rep['generated'][:10]}: {res['errors']} errors, {res['warnings']} warnings"
+                          + ("; off-site step pending" if offsite else ""))
         it["next_due"] = next_due(now, it.get("cadence_days", 30))
+    # Search Console verified by DNS TXT or meta tag: the off-site half is likely done, confirm it
+    sc = rep.get("site_checks") or {}
+    gsc = led["items"].get("search-console")
+    via = "DNS TXT" if (sc.get("dns_verification") or {}).get("google") else (
+        "meta tag" if (sc.get("verification_meta") or {}).get("google-site-verification") else None)
+    if gsc and via and gsc.get("status") == "todo":
+        gsc.update({"status": "manual", "last_checked": now, "last_changed": now, "manual_pending": True,
+                    "evidence": f"google-site-verification {via} found — confirm the property shows as verified in Search Console "
+                                "and the sitemap is submitted, then mark pass"})
     st.save("ledger.json", led)
 
     # 2) page inventory + change detection
@@ -330,7 +525,6 @@ def cmd_ingest(st: State, a):
     # (audit.py re-fetches every known URL from pages.json, so dead pages are always seen.)
     inv["last_ingest"] = now
     st.save("pages.json", inv)
-    cfg = st.config()
     if stale_lastmod and "sitemap" in led["items"]:
         sitem = led["items"]["sitemap"]
         if sitem.get("status") == "pass":
@@ -358,7 +552,8 @@ def cmd_ingest(st: State, a):
                errors=rep["summary"]["errors"], warnings=rep["summary"]["warnings"])
     first_run = len(new) == len(seen) and not changed
     print(f"ingested {a.report}: {len(seen)} pages ({len(new)} new, {len(changed)} changed, {len(removed)} removed)"
-          + (" — first inventory" if first_run else ""))
+          + (" — first inventory" if first_run else "")
+          + (" — partial audit: checklist items only updated where they got worse" if partial else ""))
     for label, lst in (("new", new), ("changed", changed), ("removed", removed)):
         for u in lst[:25]:
             print(f"  {label:<8}{path_of(u)}")
@@ -429,6 +624,10 @@ def cmd_mark(st: State, a):
     if it.get("status") != a.status:
         it["last_changed"] = now
     it["status"] = a.status
+    if a.status == "manual":
+        it["manual_pending"] = True
+    else:
+        it.pop("manual_pending", None)  # an explicit mark settles the off-site step
     it["last_checked"] = now
     if a.evidence is not None:
         it["evidence"] = a.evidence
@@ -543,12 +742,12 @@ def cmd_listing(st: State, a):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--state", default=".get-found")
+    ap.add_argument("--state", help="state dir (default: nearest .get-found/ up to the git root)")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     s = sub.add_parser("init")
-    s.add_argument("--site", required=True)
-    s.add_argument("--type", nargs="+", default=["saas"], help=f"one or more of {', '.join(SITE_TYPES)} (space- or comma-separated)")
+    s.add_argument("--site", help="site URL (required on first init)")
+    s.add_argument("--type", nargs="+", help=f"one or more of {', '.join(SITE_TYPES)} (space- or comma-separated; default saas)")
     s.add_argument("--social", nargs="*", help="profiles as name=url, e.g. linkedin=https://www.linkedin.com/company/acme")
     s.add_argument("--training", choices=["allow", "block"], help="AI-training crawler policy (search/answer bots are always allowed)")
     s.add_argument("--author", nargs="*", help="post author name(s) for bylines")
@@ -557,13 +756,17 @@ def main():
     s.add_argument("--locale")
     s.add_argument("--country", help="ISO country code of the main market, e.g. IN, US")
     s.add_argument("--vertical", nargs="*", help="e.g. healthcare real-estate (adds vertical directories)")
-    s.add_argument("--blog-prefix", default="/blog/")
-    s.add_argument("--blog-cadence", type=int, default=7)
-    s.add_argument("--force", action="store_true")
+    s.add_argument("--blog-prefix", nargs="*", help="blog path prefix(es), e.g. /blog/ /journal/ (default /blog/; posts are also found via Article JSON-LD)")
+    s.add_argument("--blog-cadence", type=int, help="days between posts (default 7)")
+    s.add_argument("--app-dir", help="monorepo: the website app's dir relative to the repo root, e.g. apps/storefront")
+    s.add_argument("--public-dir", help="dir served at the site root (default: detected, e.g. apps/storefront/public)")
+    s.add_argument("--force", action="store_true", help="re-initialise; keeps the ledger and every setting not given again")
+    s = sub.add_parser("detect"); s.add_argument("--json", action="store_true")
 
     s = sub.add_parser("status"); s.add_argument("--json", action="store_true")
     s = sub.add_parser("due"); s.add_argument("--days", type=int, default=0); s.add_argument("--json", action="store_true")
     s = sub.add_parser("ingest"); s.add_argument("report")
+    s.add_argument("--force", action="store_true", help="ingest even if the report's host differs from config site_url")
     s = sub.add_parser("changes"); s.add_argument("--channel", default="indexnow", choices=CHANNELS); s.add_argument("--json", action="store_true")
     s = sub.add_parser("submitted"); s.add_argument("--channel", required=True, choices=CHANNELS)
     s.add_argument("--urls", nargs="*"); s.add_argument("--all-pending", action="store_true")
@@ -577,10 +780,10 @@ def main():
     s = sub.add_parser("log"); s.add_argument("message", nargs="+")
 
     a = ap.parse_args()
-    st = State(a.state)
-    if a.cmd != "init":
+    st = State(find_state_dir(a.state, for_init=a.cmd in ("init", "detect")))
+    if a.cmd not in ("init", "detect"):
         st.require()
-    {"init": cmd_init, "status": cmd_status, "due": cmd_due, "ingest": cmd_ingest, "changes": cmd_changes,
+    {"init": cmd_init, "detect": cmd_detect, "status": cmd_status, "due": cmd_due, "ingest": cmd_ingest, "changes": cmd_changes,
      "submitted": cmd_submitted, "mark": cmd_mark, "keywords": cmd_keywords, "listings": cmd_listings,
      "listing": cmd_listing, "log": cmd_log}[a.cmd](st, a)
 
