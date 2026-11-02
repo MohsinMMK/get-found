@@ -8,8 +8,8 @@ Usage:
   python3 audit.py https://example.com --state .get-found          # writes report into state dir
   python3 audit.py https://example.com --urls /pricing /blog/new-post   # only these pages
 
-Outputs <state>/reports/audit-<timestamp>.json and .md (or ./get-found-audit.* without --state)
-and prints a short summary. Feed the JSON to `state.py ingest` to update the ledger.
+Outputs <state>/reports/audit-<timestamp>.json and .md and prints a short summary. Without
+--state nothing is written to the project: the report goes to <tmp>/get-found/ (read-only check). Feed the JSON to `state.py ingest` to update the ledger.
 Exit code: 0 = no errors, 1 = errors found, 2 = could not run.
 """
 from __future__ import annotations
@@ -19,6 +19,7 @@ import concurrent.futures as cf
 import json
 import re
 import sys
+import tempfile
 import time
 import urllib.parse
 import uuid
@@ -26,8 +27,9 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _common import (VERSION, die, fetch, image_size, jsonld_types, load_reference, normalize_url,  # noqa: E402
-                     now_iso, parse_date, parse_html, path_of, same_site, save_json, sha)
+from _common import (VERSION, die, dns_txt, fetch, find_state_dir, image_size, jsonld_types,  # noqa: E402
+                     load_reference, normalize_url, now_iso, parse_date, parse_html, path_of, same_site,
+                     save_json, sha)
 from robots import Robots, bot_matrix, verdict  # noqa: E402
 
 import xml.etree.ElementTree as ET  # noqa: E402
@@ -132,7 +134,9 @@ def audit_page(url: str, root: str, th: dict, og_cache: dict) -> dict:
             "redirects": [c for c, _ in r.redirects], "elapsed_ms": r.elapsed_ms, "issues": [], "links": []}
     iss = Issues()
     if r.error:
-        iss.add("crawlability", "error", "fetch-failed", f"Could not fetch: {r.error}", url)
+        # fetch() already retried once; a lone network/DNS failure says little about the page itself
+        iss.add("crawlability", "warn", "fetch-failed", f"Could not fetch after {r.attempts} attempts (network/DNS): {r.error}", url)
+        page["fetch_failed"] = True
         page["issues"] = iss.items
         return page
     if r.redirects:
@@ -162,16 +166,18 @@ def audit_page(url: str, root: str, th: dict, og_cache: dict) -> dict:
         iss.add("preview-images", "warn", "head-too-deep", f"</head> ends at byte {head_end // 1024} KB — WhatsApp only reads the first {th['html_head_max_bytes'] // 1024} KB for link previews (move big inline scripts/styles out of <head>)", url)
     base = r.final_url or url
     # ---------- robots / indexability
-    robots_meta = ",".join(filter(None, [p.meta("robots") or "", p.meta("googlebot") or ""])).lower()
+    # every <meta name=robots|googlebot|bingbot>, kept per name (a page may carry several of each)
+    robots_by_name = {n: ", ".join(p.meta_all(n)).lower() for n in ("robots", "googlebot", "bingbot") if p.meta_all(n)}
+    robots_meta = ",".join(filter(None, [robots_by_name.get("robots", ""), robots_by_name.get("googlebot", "")]))
     x_robots = r.headers.get("x-robots-tag", "").lower()
     noindex = bool(re.search(r"\b(noindex|none)\b", robots_meta + "," + x_robots))
     page["noindex"] = noindex
-    page["robots_meta"] = robots_meta
+    page["robots_meta"] = robots_by_name
     page["x_robots_tag"] = x_robots
     page["nosnippet"] = "nosnippet" in robots_meta or "nosnippet" in x_robots
     if page["nosnippet"]:
         iss.add("ai-readable", "warn", "nosnippet", "nosnippet set — page cannot be quoted in snippets or Google AI features", url)
-    directives = robots_meta + "," + x_robots + "," + (p.meta("bingbot") or "").lower()
+    directives = robots_meta + "," + x_robots + "," + robots_by_name.get("bingbot", "")
     if "noarchive" in directives:
         iss.add("ai-readable", "warn", "noarchive", "noarchive set — Bing excludes the page's content from Copilot answers", url)
     elif "nocache" in directives:
@@ -255,6 +261,15 @@ def audit_page(url: str, root: str, th: dict, og_cache: dict) -> dict:
                         iss.add("preview-images", "info", "og-image-ratio", f"og:image aspect {ratio:.2f}:1 (≈1.91:1 recommended)", url)
                 if info.get("bytes") and info["bytes"] > th["og_max_bytes"]:
                     iss.add("preview-images", "warn", "og-image-heavy", f"og:image is {info['bytes']//1024} KB (some apps, e.g. WhatsApp, drop large images; aim < {th['og_max_bytes']//1024} KB)", url)
+                fmt = (info.get("format") or "").lower()
+                if fmt in ("webp", "avif") or any(t in (info.get("content_type") or "").lower() for t in ("image/webp", "image/avif")):
+                    iss.add("preview-images", "info", "og-image-webp", f"og:image is {fmt.upper() or 'WebP/AVIF'} — some preview crawlers (older Facebook/LinkedIn/Slack/iMessage paths) only render JPEG/PNG; serve a JPEG/PNG for og:image", url)
+    og_url = normalize_url(og["url"], base) if og["url"] else None
+    if og_url and urllib.parse.urlsplit(base).path not in ("", "/"):
+        if urllib.parse.urlsplit(og_url).path in ("", "/"):
+            iss.add("preview-images", "warn", "og-url-homepage", f"og:url points at the homepage ({og_url}) — shares of this page will show/attribute the homepage", url)
+        elif og_url.rstrip("/") != (canonical or base.split("#")[0]).rstrip("/"):
+            iss.add("preview-images", "info", "og-url-mismatch", f"og:url {og_url} differs from the canonical {canonical or base}", url)
     missing_og = [f"og:{k}" for k in ("url", "type", "site_name") if not og[k]]
     if img and not (p.meta("og:image:width") and p.meta("og:image:height")):
         missing_og.append("og:image:width/height")
@@ -290,7 +305,8 @@ def audit_page(url: str, root: str, th: dict, og_cache: dict) -> dict:
     if org and org.get("logo"):
         lg = org["logo"]
         page["org_logo"] = lg.get("url") if isinstance(lg, dict) else (lg if isinstance(lg, str) else None)
-    page["same_as"] = sorted({s for o in objs for s in (o.get("sameAs") if isinstance(o.get("sameAs"), list) else [o.get("sameAs")] if o.get("sameAs") else [])})
+    page["same_as"] = sorted({s for o in objs for s in (o.get("sameAs") if isinstance(o.get("sameAs"), list) else [o.get("sameAs")])
+                              if isinstance(s, str) and s})
 
     # ---------- AI readability (server HTML content)
     text = p.visible_text()
@@ -318,8 +334,16 @@ def audit_page(url: str, root: str, th: dict, og_cache: dict) -> dict:
             internal.append(u)
     page["links"] = sorted(set(internal))
     page["internal_links"] = len(page["links"])
-    if noindex:  # not shown in search — presentation checks don't apply
-        iss.items = [i for i in iss.items if i["item"] == "crawlability" and i["code"] not in ("no-canonical", "viewport-missing", "lang-missing")]
+    if noindex:
+        # Not shown in search, so search-presentation checks don't apply. Link previews still do (noindex
+        # pages get shared too), so keep preview-images findings, downgraded to info.
+        kept = []
+        for i in iss.items:
+            if i["item"] == "crawlability" and i["code"] not in ("no-canonical", "viewport-missing", "lang-missing"):
+                kept.append(i)
+            elif i["item"] == "preview-images" and i["code"] not in ("image-preview-limited",):
+                kept.append({**i, "severity": "info", "message": i["message"] + " (noindex page — matters only for link previews)"})
+        iss.items = kept
     page["issues"] = iss.items
     icons = p.link_rel("icon") + p.link_rel("shortcut") + p.link_rel("apple-touch-icon")
     page["favicon"] = bool(icons)
@@ -349,6 +373,10 @@ def site_checks(root: str, th: dict, state_dir: Path | None, config: dict, iss: 
         iss.add("crawlability", "warn", "robots-too-big", f"robots.txt larger than {th['robots_max_bytes']} bytes; content past the limit is ignored")
     robots = Robots(text)
     robots_info["sitemaps"] = robots.sitemaps
+    if rr.error or rr.status >= 500:
+        # RFC 9309 §2.3.1.4: unreachable / 5xx means "assume complete disallow" — the bot matrix must say so
+        robots = Robots("User-agent: *\nDisallow: /")
+        robots_info["assumed"] = "disallow-all (robots.txt unreachable or 5xx)"
     robots_info["content_signal"] = [l.strip() for l in text.splitlines() if l.strip().lower().startswith("content-signal")]
     for line in robots_info["content_signal"]:
         prefs = dict(kv.strip().lower().split("=", 1) for kv in line.split(":", 1)[1].split(",") if "=" in kv)
@@ -369,7 +397,7 @@ def site_checks(root: str, th: dict, state_dir: Path | None, config: dict, iss: 
     out["bots"] = rows
     policy = (config.get("ai_training_policy") or "allow").lower()
     for r in rows:
-        if r["category"] != "training":
+        if r["category"] != "training" or robots_info.get("assumed"):
             continue
         if policy == "allow" and not r["all_allowed"]:
             iss.add("ai-bots-allowed", "warn", "training-policy-mismatch", f"{r['token']} is blocked but the recorded AI-training policy is 'allow' — update robots.txt or the policy")
@@ -420,29 +448,88 @@ def site_checks(root: str, th: dict, state_dir: Path | None, config: dict, iss: 
     if sr.status == 200:
         iss.add("crawlability", "warn", "soft-404", "Unknown URLs return 200 instead of 404 (soft 404s waste crawl budget and confuse indexing)")
 
-    # https + host consistency
+    # https + host consistency: follow each variant's full redirect chain to the canonical root
     p = urllib.parse.urlsplit(root)
-    if p.scheme == "https" and p.hostname not in ("localhost", "127.0.0.1"):
-        hr = fetch(f"http://{p.netloc}/", follow_redirects=False)
-        loc = hr.headers.get("location", "")
-        out["http_redirect"] = {"status": hr.status, "location": loc}
-        if hr.status not in (301, 308) or not loc.startswith("https://"):
-            iss.add("crawlability", "warn", "http-not-redirected", f"http:// homepage answers {hr.status or hr.error} instead of a permanent redirect to https")
+    local = p.hostname in ("localhost", "127.0.0.1", "::1") or (p.hostname or "").endswith((".localhost", ".test"))
+    if p.scheme == "https" and not local:
         alt = p.netloc[4:] if p.netloc.startswith("www.") else "www." + p.netloc
-        ar = fetch(f"https://{alt}/", follow_redirects=False)
-        if ar.status == 200:
-            iss.add("crawlability", "warn", "www-duplicate", f"Both {p.netloc} and {alt} serve 200 — redirect one to the other")
-    return out
+        chains = {}
+        for start in (f"http://{p.netloc}/", f"http://{alt}/", f"https://{alt}/"):
+            chains[start] = c = redirect_chain(start)
+            hops = c["hops"]
+            final = c["final"]
+            if c.get("error") and not hops:
+                continue  # e.g. no DNS for the www/apex variant — nothing to redirect
+            if start.startswith("http://") and (not hops or hops[0]["status"] not in (301, 308) or not hops[0]["location"].startswith("https://")):
+                first = hops[0]["status"] if hops else (c.get("status") or c.get("error"))
+                iss.add("crawlability", "warn", "http-not-redirected", f"{start} answers {first} instead of a permanent redirect to https")
+            elif not hops and c.get("status") == 200:
+                iss.add("crawlability", "warn", "www-duplicate", f"Both {p.netloc} and {alt} serve 200 — redirect one to the other")
+            elif hops:
+                temp = [h["status"] for h in hops if h["status"] in (302, 303, 307)]
+                if temp:
+                    iss.add("crawlability", "warn", "redirect-temporary", f"{start} redirects with {', '.join(map(str, temp))} (temporary) — use 301/308 so engines consolidate on {root}")
+                if final and final.rstrip("/") != root.rstrip("/"):
+                    iss.add("crawlability", "warn", "redirect-wrong-target", f"{start} ends at {final}, not the canonical {root}")
+                elif len(hops) > 1:
+                    iss.add("crawlability", "info", "redirect-chain", f"{start} takes {len(hops)} hops to reach {root} ({' → '.join(str(h['status']) for h in hops)}); one hop is better")
+        out["http_redirect"] = chains
+
+    # Search Console verification by DNS TXT (meta-tag verification is read from the homepage HTML)
+    if not local and p.hostname:
+        host = p.hostname
+        names = [host] + ([host[4:]] if host.startswith("www.") else [])
+        tokens = None
+        for name in names:
+            txt = dns_txt(name)
+            if txt is None:
+                continue
+            tokens = (tokens or []) + [t for t in txt if t.startswith("google-site-verification=")]
+        out["dns_verification"] = {"checked": names, "google": bool(tokens), "lookup_failed": tokens is None}
+    return out, robots
+
+
+def redirect_chain(url: str, limit: int = 6) -> dict:
+    """Follow redirects by hand so each hop's status and Location are visible."""
+    hops = []
+    cur = url
+    for _ in range(limit):
+        r = fetch(cur, follow_redirects=False, retries=0, timeout=12)
+        if r.error:
+            return {"hops": hops, "final": cur if hops else None, "error": r.error}
+        loc = r.headers.get("location", "")
+        if r.status in (301, 302, 303, 307, 308) and loc:
+            nxt = urllib.parse.urljoin(cur, loc)
+            hops.append({"url": cur, "status": r.status, "location": nxt})
+            cur = nxt
+            continue
+        return {"hops": hops, "final": cur, "status": r.status}
+    return {"hops": hops, "final": cur, "error": "too many redirects"}
 
 
 # --------------------------------------------------------------------------- crawl
 
-def crawl(root: str, seeds: list[str], max_pages: int, workers: int, th: dict, only: bool) -> tuple[dict, bool]:
+def crawl(root: str, seeds: list[str], max_pages: int, workers: int, th: dict, only: bool,
+          robots: Robots | None = None, exempt: set | None = None) -> tuple[dict, bool, dict]:
+    """BFS over same-site links. Honours robots.txt for Googlebot (falls back to '*'): disallowed
+    URLs are not fetched, only recorded with their referrers. `exempt` URLs (explicit --urls, the
+    root) are fetched anyway. With only=True links are not followed, but redirect targets are."""
     pages: dict[str, dict] = {}
     referrers: dict[str, list] = defaultdict(list)
+    disallowed: dict[str, str] = {}
     og_cache: dict = {}
-    queue = list(dict.fromkeys(seeds))
-    queued = set(queue)
+    exempt = exempt or set()
+
+    def blocked(u: str) -> bool:
+        if robots is None or u in exempt:
+            return False
+        ok, rule = robots.allowed("Googlebot", u)
+        if not ok:
+            disallowed[u] = rule
+        return not ok
+
+    queue = [u for u in dict.fromkeys(seeds) if not blocked(u)]
+    queued = set(seeds)
     with cf.ThreadPoolExecutor(max_workers=workers) as pool:
         while queue and len(pages) < max_pages:
             batch = []
@@ -451,9 +538,10 @@ def crawl(root: str, seeds: list[str], max_pages: int, workers: int, th: dict, o
             for res in pool.map(lambda u: audit_page(u, root, th, og_cache), batch):
                 pages[res["url"]] = res
                 target = res.get("redirect_target")
-                if target and same_site(target, root) and target not in queued and not only:
+                if target and same_site(target, root) and target not in queued:
                     queued.add(target)
-                    queue.append(target)
+                    if not blocked(target):
+                        queue.append(target)
                 if only:
                     continue
                 for link in res.get("links", []):
@@ -461,7 +549,8 @@ def crawl(root: str, seeds: list[str], max_pages: int, workers: int, th: dict, o
                         referrers[link].append(res["url"])
                     if link not in queued and not SKIP_EXT.search(urllib.parse.urlsplit(link).path) and "?" not in link:
                         queued.add(link)
-                        queue.append(link)
+                        if not blocked(link):
+                            queue.append(link)
     for url, p in pages.items():
         if referrers.get(url):
             p["linked_from"] = referrers[url]
@@ -469,11 +558,25 @@ def crawl(root: str, seeds: list[str], max_pages: int, workers: int, th: dict, o
                 for i in p.get("issues", []):
                     if i["code"].startswith("http-"):
                         i["message"] += f" — linked from {', '.join(path_of(r) for r in referrers[url])}"
-    return pages, bool(queue)
+    skipped = {u: {"rule": rule, "linked_from": referrers.get(u, [])} for u, rule in disallowed.items()}
+    return pages, bool(queue), skipped
 
 
-def summarize(pages: dict, site: dict, issues: Issues, sitemap_urls: dict, th: dict) -> None:
-    """Cross-page checks: duplicates, sitemap coverage."""
+def intentional_noindex(config: dict) -> list[tuple[str, str]]:
+    """config.intentional_noindex: ["/shop/", {"path": "/products/", "reason": "pre-launch"}] — path prefixes."""
+    out = []
+    for e in config.get("intentional_noindex") or []:
+        if isinstance(e, str) and e:
+            out.append((e, ""))
+        elif isinstance(e, dict) and e.get("path"):
+            out.append((e["path"], e.get("reason", "")))
+    return out
+
+
+def summarize(pages: dict, site: dict, issues: Issues, sitemap_urls: dict, th: dict, config: dict | None = None,
+              disallowed: dict | None = None) -> None:
+    """Cross-page checks: duplicates, sitemap coverage, noindex patterns, robots-skipped URLs."""
+    config = config or {}
     html_pages = {u: p for u, p in pages.items() if p.get("status") == 200 and not p.get("non_html") and not p.get("redirect_target")}
     indexable = {u: p for u, p in html_pages.items() if not p.get("noindex")}
     for field, item in (("title", "titles"), ("description", "titles")):
@@ -491,9 +594,17 @@ def summarize(pages: dict, site: dict, issues: Issues, sitemap_urls: dict, th: d
         issues.add("crawlability", "info", "noindex-summary",
                    f"{len(noindexed)} of {len(html_pages)} reachable HTML pages are noindex: {top}. Fine for account/cart/legal pages; make sure products, categories and content you want found are not in this list.")
         sell = [u for u in noindexed if re.search(r"/(products?|shop|collections?|categor(y|ies)|store|pricing|services?)(/|$)", urllib.parse.urlsplit(u).path)]
-        if len(sell) >= 3:
+        acked = intentional_noindex(config)
+        known = [u for u in sell if any(urllib.parse.urlsplit(u).path.startswith(pfx) for pfx, _ in acked)]
+        unknown = [u for u in sell if u not in known]
+        if len(unknown) >= 3:
             issues.add("crawlability", "warn", "commercial-pages-noindex",
-                       f"{len(sell)} product/shop/category pages are noindex (e.g. {', '.join(path_of(u) for u in sell[:3])}) — they can't appear in Google, Bing or AI shopping answers. Intended (pre-launch) or a leftover gate?")
+                       f"{len(unknown)} product/shop/category pages are noindex (e.g. {', '.join(path_of(u) for u in unknown[:3])}) — they can't appear in Google, Bing or AI shopping answers. Intended (pre-launch) or a leftover gate? "
+                       "If intended, record it in .get-found/config.json: \"intentional_noindex\": [{\"path\": \"/products/\", \"reason\": \"pre-launch\"}]")
+        if known:
+            why = "; ".join(f"{pfx}{' (' + r + ')' if r else ''}" for pfx, r in acked)
+            issues.add("crawlability", "info", "commercial-pages-noindex-intended",
+                       f"{len(known)} product/shop/category pages are noindex as recorded in config.intentional_noindex: {why}")
     if sitemap_urls:
         sm = set((normalize_url(u) or u).rstrip("/") for u in sitemap_urls)
         for u, p in indexable.items():
@@ -510,11 +621,27 @@ def summarize(pages: dict, site: dict, issues: Issues, sitemap_urls: dict, th: d
                     issues.add("sitemap", "warn", "sitemap-redirect", f"Sitemap lists a redirecting URL: {path_of(u)}", u)
                 elif p.get("canonical") and p["canonical"].rstrip("/") != u.rstrip("/"):
                     issues.add("sitemap", "warn", "sitemap-non-canonical", f"Sitemap lists a non-canonical URL: {path_of(u)}", u)
+        by_norm = {(normalize_url(u) or u).rstrip("/"): v for u, v in sitemap_urls.items()}
+        for u, p in indexable.items():
+            lm, dm = by_norm.get(u.rstrip("/")), p.get("date_modified")
+            if (lm and isinstance(dm, str) and parse_date(lm) and parse_date(dm) and lm[:10] != dm[:10]
+                    and parse_date(lm).date() != parse_date(dm).date()):
+                issues.add("sitemap", "warn", "lastmod-datemodified-mismatch",
+                           f"Sitemap <lastmod> {lm[:10]} differs from the page's dateModified {dm[:10]}: {path_of(u)} — engines distrust lastmod that disagrees with the page", u)
         lastmods = [v for v in sitemap_urls.values() if v]
         if len(sitemap_urls) > 5 and len(set(lastmods)) == 1:
             issues.add("sitemap", "warn", "sitemap-uniform-lastmod", "Every <lastmod> is identical — looks like build time, not real modification dates; search engines ignore untrustworthy lastmod")
         if not lastmods and sitemap_urls:
             issues.add("sitemap", "info", "sitemap-no-lastmod", "Sitemap has no <lastmod>; add accurate dates so engines re-crawl changed pages")
+    if disallowed:
+        in_sm = [u for u in disallowed if (normalize_url(u) or u).rstrip("/") in set((normalize_url(x) or x).rstrip("/") for x in sitemap_urls)]
+        if in_sm:
+            issues.add("sitemap", "warn", "sitemap-disallowed",
+                       f"{len(in_sm)} sitemap URLs are disallowed by robots.txt (e.g. {', '.join(path_of(u) for u in in_sm[:3])}) — list only crawlable pages, or unblock them")
+        linked = [u for u, d in disallowed.items() if d["linked_from"] and u not in in_sm]
+        if linked:
+            issues.add("crawlability", "info", "robots-disallowed-linked",
+                       f"{len(linked)} internally linked URLs are disallowed by robots.txt and were not crawled (e.g. {', '.join(path_of(u) for u in linked[:3])}). Fine for cart/account; rerun with --ignore-robots to audit them anyway.")
     home = next((p for u, p in html_pages.items() if urllib.parse.urlsplit(u).path in ("", "/")), None)
     if home:
         types = home.get("jsonld_types", [])
@@ -592,10 +719,11 @@ def main():
     ap.add_argument("--urls", nargs="*", help="audit only these URLs/paths (no crawling)")
     ap.add_argument("--out", help="output path prefix (default <state>/reports/audit-<ts>)")
     ap.add_argument("--probe-bots", action="store_true", help="also request the homepage with AI-bot user-agents to spot CDN/WAF blocks (hints only)")
+    ap.add_argument("--ignore-robots", action="store_true", help="also crawl URLs robots.txt disallows for Googlebot")
     ap.add_argument("--quiet", action="store_true")
     args = ap.parse_args()
 
-    state_dir = Path(args.state) if args.state else None
+    state_dir = find_state_dir(args.state) if args.state else None
     config = {}
     if state_dir:
         from _common import load_json
@@ -617,7 +745,7 @@ def main():
     if home.final_url and home.final_url != root and same_site(home.final_url, root):
         root = urllib.parse.urlunsplit(urllib.parse.urlsplit(home.final_url)._replace(path="/", query=""))
 
-    site_info = site_checks(root, th, state_dir, config, iss, args.probe_bots)
+    site_info, robots = site_checks(root, th, state_dir, config, iss, args.probe_bots)
     sitemap_list = args.sitemap or config.get("sitemaps") or site_info["robots"].get("sitemaps") or [urllib.parse.urljoin(root, "/sitemap.xml")]
     sitemap_urls: dict = {}
     for sm in sitemap_list:
@@ -642,13 +770,16 @@ def main():
         seeds = [root] + [u for u in sitemap_urls if same_site(u, root)] + known  # known: re-check pages we tracked before
         seeds = list(dict.fromkeys(filter(None, (normalize_url(u) for u in seeds))))
         only = False
-    pages, truncated = crawl(root, seeds, args.max_pages if not args.urls else len(seeds), args.workers, th, only)
+    exempt = set(seeds) if only else {root}
+    max_pages = args.max_pages if not args.urls else len(seeds) * 2  # room for each URL's redirect target
+    pages, truncated, disallowed = crawl(root, seeds, max_pages, args.workers, th, only,
+                                         None if args.ignore_robots or site_info["robots"].get("assumed") else robots, exempt)
     for p in pages.values():
         iss.items.extend(p.get("issues", []))
-    summarize(pages, site_info, iss, {u: v for u, v in sitemap_urls.items()} if not args.urls else {}, th)
+    summarize(pages, site_info, iss, {u: v for u, v in sitemap_urls.items()} if not args.urls else {}, th, config, disallowed)
 
     report = {
-        "tool": "get-found-audit", "version": VERSION, "site": root, "generated": now_iso(),
+        "tool": "get-found-audit", "version": VERSION, "site": root, "requested_site": site, "generated": now_iso(),
         "partial": bool(args.urls),
         "truncated": truncated,
         "summary": {"pages_crawled": len(pages), "sitemap_urls": len(sitemap_urls), "seconds": round(time.time() - t0, 1),
@@ -657,11 +788,13 @@ def main():
         "items": rollup(iss.items, config),
         "site_checks": site_info,
         "sitemap_lastmod": sitemap_urls,
+        "robots_disallowed": disallowed,
         "issues": iss.items,
         "pages": [{k: v for k, v in p.items() if k not in ("links", "issues")} for p in pages.values()],
     }
     ts = time.strftime("%Y%m%d-%H%M%S")
-    prefix = Path(args.out) if args.out else ((state_dir / "reports" / f"audit-{ts}") if state_dir else Path("get-found-audit"))
+    prefix = Path(args.out) if args.out else ((state_dir / "reports" / f"audit-{ts}") if state_dir
+                                               else Path(tempfile.gettempdir()) / "get-found" / f"audit-{ts}")
     save_json(prefix.with_suffix(".json"), report)
     prefix.with_suffix(".md").write_text(render_md(report), encoding="utf-8")
     if not args.quiet:
@@ -670,7 +803,8 @@ def main():
         for k, v in report["items"].items():
             print(f"  {v['status'].upper():<5} {k:<16} {v['errors']} errors, {v['warnings']} warnings")
         if truncated:
-            print(f"  note: stopped at --max-pages {args.max_pages}; raise it for a full inventory (removed-page detection is skipped)")
+            print(f"  note: stopped at --max-pages {args.max_pages} with pages still queued; raise it for a full inventory "
+                  "(ingest treats this as partial: site-wide items only get worse, never better; uncrawled pages are not marked removed)")
         print(f"report: {prefix.with_suffix('.json')}  |  {prefix.with_suffix('.md')}")
     sys.exit(1 if report["summary"]["errors"] else 0)
 
